@@ -1,5 +1,34 @@
 # adb-mcp
 
+> ## Fork notice
+>
+> **This is a fork. I am not the author of this project.**
+>
+> The original is [mikechambers/adb-mcp](https://github.com/mikechambers/adb-mcp) by
+> **Mike Chambers**, released under the MIT licence. Essentially all of the code and
+> documentation here is his work. The copyright notice in [LICENSE.md](LICENSE.md) is
+> unchanged and stays that way.
+>
+> This fork exists only to carry a small set of bug fixes and additions that a
+> PSD → After Effects production workflow depends on. It is **not** affiliated with,
+> reviewed by, or endorsed by Mike Chambers. Please report bugs in the original code
+> upstream, not here. Like the original, it is not endorsed by nor supported by Adobe.
+>
+> Modifications in this fork are offered back under the same MIT licence.
+>
+> ### What differs from upstream
+>
+> | File | Change |
+> | --- | --- |
+> | `uxp/ps/commands/utils.js` | Wrap every command in `suspendHistory` so one command is one undo step |
+> | `uxp/ps/commands/layers.js` | Add a `visible` field to `getLayers`; preserve visibility across a rename; make `translateLayer` throw instead of silently doing nothing inside an artboard; remove a nested `executeAsModal` in `exportLayersAsPng` that made visibility restore always fail |
+> | `uxp/ps/commands/core.js` | `setActiveDocument` now iterates `app.documents` instead of assigning a plain info object |
+> | `mcp/ae-mcp.py` | Add `get_project_info`, `get_compositions` and `get_layers` (upstream exposes only `execute_extend_script`) |
+> | `cep/com.mikechambers.ae/commands.js` | Register those three handlers, drop a double packet wrap, `decodeURI` the project filename |
+> | `mcp/ps-mcp.py` | Document that `visible` is a layer's own flag and is not inherited from parent groups |
+> | `README.md` | Rewrite the install section: `uv sync` instead of `mcp install --with …`, which pulls `mcp` 2.x and breaks the servers |
+> | `QUICKSTART.md` | New — end-to-end setup guide for a fresh machine (written in Vietnamese) |
+
 adb-mcp is a proof of concept project to enabled AI control of Adobe tools (Adobe Photoshop and Adobe Premiere) by providing an interface to LLMs via the MCP protocol.
 
 The project is not endorsed by nor supported by Adobe.
@@ -56,32 +85,56 @@ Clone or download the source code from the [main project page](https://github.co
 Note, you can use any client / code that supports MCP, just follow its instructions for how to configure.
 
 ### Install MCP for Development
-Navigate to the project directory and run:
 
-#### Photoshop
+All commands below must be run from the **`mcp/` directory** of the project (the one containing
+`pyproject.toml` and the `*-mcp.py` files), not from the repository root:
+
 ```bash
-uv run mcp install --with fonttools --with python-socketio --with mcp --with requests --with websocket-client --with numpy ps-mcp.py
+cd mcp
+uv sync
 ```
 
-#### Premiere Pro
-```bash
-uv run mcp install --with fonttools --with python-socketio --with mcp --with requests --with websocket-client --with pillow pr-mcp.py
+`uv sync` creates the project environment from `uv.lock`, which pins the dependency versions the
+servers are known to work with.
+
+Then register the server(s) you want with your AI client. For Claude Desktop, add an entry to
+`claude_desktop_config.json` (*Settings > Developer > Edit Config*):
+
+```json
+{
+  "mcpServers": {
+    "Adobe Photoshop MCP Server": {
+      "command": "/absolute/path/to/uv",
+      "args": [
+        "run",
+        "--directory", "/absolute/path/to/adb-mcp/mcp",
+        "mcp", "run", "ps-mcp.py"
+      ]
+    }
+  }
+}
 ```
 
-#### InDesign
-```bash
-uv run mcp install --with fonttools --with python-socketio --with mcp --with requests --with websocket-client --with pillow id-mcp.py
-```
+Swap `ps-mcp.py` for the app you want, and use one entry per app:
 
-#### AfterEffects
-```bash
-uv run mcp install --with fonttools --with python-socketio --with mcp --with requests --with websocket-client --with pillow ae-mcp.py
-```
+| App | Script |
+| --- | --- |
+| Photoshop | `ps-mcp.py` |
+| Premiere Pro | `pr-mcp.py` |
+| InDesign | `id-mcp.py` |
+| AfterEffects | `ae-mcp.py` |
+| Illustrator | `ai-mcp.py` |
 
-#### Illustrator
-```bash
-uv run mcp install --with fonttools --with python-socketio --with mcp --with requests --with websocket-client --with pillow ai-mcp.py
-```
+Notes:
+
+-   Use an **absolute path** for `uv` (`which uv`, e.g. `/opt/homebrew/bin/uv`). Claude Desktop does
+    not inherit your shell `PATH`.
+-   `--directory` is what makes the server run inside the project environment. It is required: it
+    both pins the dependency versions and puts the local helper modules (`socket_client`, `fonts`,
+    `logger`, `core`) on the import path.
+-   Do **not** use `mcp install` or `uv run --with ...`. Those build a throwaway environment that
+    ignores `uv.lock` and resolves the latest `mcp` release. `mcp` 2.x removed
+    `mcp.server.fastmcp`, so the servers fail to import — see Troubleshooting below.
 
 Restart Claude Desktop after installation.
 
@@ -288,6 +341,36 @@ By default, the AI cannot access files directly, although if you install the [Cl
 #### MCP won't run in Claude
 
 If you get an error when running Claude that the MCP is not working, you may need to edit your Claude config file and put an absolute path for the UV command. More info [here](https://github.com/mikechambers/adb-mcp/issues/5#issuecomment-2829817624).
+
+#### "Server disconnected" / `No module named 'mcp.server.fastmcp'`
+
+Check the client log (on macOS: `~/Library/Logs/Claude/mcp-server-<NAME>.log`). If it ends with:
+
+```
+File ".../mcp/ps-mcp.py", line 23, in <module>
+    from mcp.server.fastmcp import FastMCP, Image
+ModuleNotFoundError: No module named 'mcp.server.fastmcp'
+```
+
+the server is running against `mcp` 2.x, which removed `mcp.server.fastmcp`. This happens when the
+config launches the server with `uv run --with ...` instead of `--directory`, because `--with`
+builds a throwaway environment that ignores `uv.lock` and grabs the newest release.
+
+Fix it by rewriting the entry to use `--directory` as shown in
+[Install MCP for Development](#install-mcp-for-development), then restart the client.
+
+#### `error: Failed to spawn: mcp`
+
+You are in the repository root. The Python project lives in `mcp/` — `cd mcp` first.
+
+#### `ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'`
+
+The project environment is missing its compiled extension modules. Rebuild it:
+
+```bash
+cd mcp
+uv sync --reinstall
+```
 
 #### All fonts not available
 

@@ -130,9 +130,10 @@ const exportLayersAsPng = async (command) => {
         results.push(result);
     }
 
-    await execute(async () => {
-        await _restoreVisibilityState(originalState);
-    })
+    //_restoreVisibilityState opens its own modal scope, so do not wrap it in
+    //another one: nested executeAsModal calls throw, which used to leave every
+    //layer stuck in the visibility state the export loop left behind.
+    await _restoreVisibilityState(originalState);
 
     return results;
 };
@@ -236,9 +237,25 @@ const _renameLayer = async (layerId, layerName) => {
         );
     }
 
+    //Renaming a layer that lives inside an artboard can flip its visibility as
+    //a side effect (Photoshop re-nests the layer), so put it back if it moved.
+    //The flip can land either inside the modal scope or as it closes, so check
+    //in both places.
+    const wasVisible = layer.visible;
+
     await execute(async () => {
         layer.name = layerName;
-    });
+
+        if (layer.visible !== wasVisible) {
+            layer.visible = wasVisible;
+        }
+    }, `Rename layer to ${layerName}`);
+
+    if (layer.visible !== wasVisible) {
+        await execute(async () => {
+            layer.visible = wasVisible;
+        }, "Restore layer visibility");
+    }
 }
 
 const renameLayers = async (command) => {
@@ -307,9 +324,30 @@ const translateLayer = async (command) => {
         );
     }
 
+    let xOffset = options.xOffset;
+    let yOffset = options.yOffset;
+
+    let before = layer.bounds;
+    let originLeft = before.left;
+    let originTop = before.top;
+
     await execute(async () => {
-        await layer.translate(options.xOffset, options.yOffset);
-    });
+        await layer.translate(xOffset, yOffset);
+    }, "Translate layer");
+
+    if (!xOffset && !yOffset) {
+        return;
+    }
+
+    //layer.translate() resolves without error even when the layer never moves,
+    //which happens for layers inside an artboard: Photoshop re-nests them and
+    //cancels the offset. Report that instead of a false success.
+    let after = layer.bounds;
+    if (after.left === originLeft && after.top === originTop) {
+        throw new Error(
+            `translateLayer : Layer [${layerId}] did not move. Layers inside an artboard are re-nested by Photoshop, which cancels the offset.`
+        );
+    }
 };
 
 const setLayerProperties = async (command) => {
@@ -700,6 +738,7 @@ const getLayers = async (command) => {
                     name: layer.name,
                     type: kind,
                     id: layer.id,
+                    visible: layer.visible,
                     isClippingMask: layer.isClippingMask,
                     opacity: Math.round(layer.opacity),
                     blendMode: layer.blendMode.toUpperCase(),

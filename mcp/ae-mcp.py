@@ -43,6 +43,70 @@ socket_client.configure(
 init(APPLICATION, socket_client)
 
 @mcp.tool()
+def get_project_info():
+    """
+    Returns information about the currently open After Effects project.
+
+    Call this first when you need your bearings: it is the cheapest way to learn
+    whether a project is open at all and whether something is active.
+
+    Returns:
+        dict: Project information containing:
+            - numItems (int): How many items (comps, footage, folders) the project holds
+            - activeItemIndex (int|None): id of the active item, or None if nothing is active
+            - projectName (str): Project file name, or "Untitled" if never saved
+    """
+    command = createCommand("getProjectInfo", {})
+    return sendCommand(command)
+
+@mcp.tool()
+def get_compositions():
+    """
+    Returns every composition in the project.
+
+    Use this to find the id and dimensions of a comp before working on it. Note
+    that this lists comps in the PROJECT panel — it says nothing about which one
+    is currently open in the timeline (see get_project_info for that).
+
+    Returns:
+        list: One dict per composition, each containing:
+            - id (int): Composition id
+            - name (str): Composition name
+            - width (int): Width in pixels
+            - height (int): Height in pixels
+            - duration (float): Duration in seconds
+            - frameRate (float): Frames per second
+    """
+    command = createCommand("getCompositions", {})
+    return sendCommand(command)
+
+@mcp.tool()
+def get_layers():
+    """
+    Returns the layers of the ACTIVE composition.
+
+    This is the main way to see what you are working on — After Effects has no
+    equivalent of Photoshop's per-response state dump, so call this after any
+    change you want to confirm.
+
+    Requires a composition to be active in the timeline. If none is, the call
+    returns {"error": "No active composition"} rather than failing — check for
+    that key before using the result.
+
+    Returns:
+        list: One dict per layer, in timeline order, each containing:
+            - index (int): 1-based layer index (1 = topmost); use it to target the layer
+            - name (str): Layer name
+            - enabled (bool): Whether the layer's eyeball is on
+            - selected (bool): Whether the layer is selected
+            - startTime (float): Layer start time in seconds
+            - inPoint (float): In point in seconds
+            - outPoint (float): Out point in seconds
+    """
+    command = createCommand("getLayers", {})
+    return sendCommand(command)
+
+@mcp.tool()
 def execute_extend_script(script_string: str):
     """
     Executes arbitrary ExtendScript code in AfterEffects and returns the result.

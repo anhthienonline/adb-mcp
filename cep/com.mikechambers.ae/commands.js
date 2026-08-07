@@ -27,7 +27,9 @@ async function getProjectInfo() {
             var info = {
                 numItems: app.project.numItems,
                 activeItemIndex: app.project.activeItem ? app.project.activeItem.id : null,
-                projectName: app.project.file ? app.project.file.name : "Untitled"
+                // File.name is URI-encoded, so "My Project.aep" comes back as
+                // "My%20Project.aep" unless it is decoded here.
+                projectName: app.project.file ? decodeURI(app.project.file.name) : "Untitled"
             };
             return JSON.stringify(info);
         })();
@@ -87,9 +89,7 @@ async function executeExtendScript(command) {
         })();
     `;
     
-    const result = await executeAECommand(script);
-    
-    return createPacket(result);
+    return await executeAECommand(script);
 }
 
 
@@ -116,26 +116,13 @@ async function getLayers() {
         }
     `;
     
-    const result = await executeAECommand(script);
-    
-
-    return createPacket(result);
-    /*return {
-        content: [{
-            type: "text",
-            text: JSON.stringify(result, null, 2)
-        }]
-    };*/
+    return await executeAECommand(script);
 }
 
-const createPacket = (result) => {
-    return {
-        content: [{
-            type: "text",
-            text: JSON.stringify(result, null, 2)
-        }]
-    };
-}
+//Handlers return their parsed result directly. They used to go through a
+//createPacket() helper that wrapped everything in {content:[{type,text}]} —
+//an MCP content envelope — which the MCP layer then wrapped again, so callers
+//received a JSON string nested two levels deep instead of usable data.
 
 const parseAndRouteCommand = async (command) => {
     let action = command.action;
@@ -169,5 +156,7 @@ async function executeCommand(command) {
 
 const commandHandlers = {
     getLayers,
+    getCompositions,
+    getProjectInfo,
     executeExtendScript
 };

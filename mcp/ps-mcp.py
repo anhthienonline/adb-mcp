@@ -352,9 +352,14 @@ def get_layers() -> list:
         
     Returns:
         list: A nested list of dictionaries containing layer information and hierarchy.
-            Each dict has at minimum a 'name' key with the layer name.
+            Each dict contains 'name', 'type', 'id', 'visible', 'isClippingMask', 'opacity' and 'blendMode'.
+            'visible' is that layer's own show/hide flag, exactly as displayed by the eye icon in
+            the Photoshop layers panel. It is NOT inherited: a layer inside a hidden group can
+            still report visible=True even though nothing of it is rendered on the canvas. To know
+            whether a layer actually shows up, it and every one of its parent groups must be visible.
+            Text layers also include a 'textInfo' key.
             If a layer has sublayers, they will be contained in a 'layers' key which contains another list of layer dicts.
-            Example: [{'name': 'Group 1', 'layers': [{'name': 'Layer 1'}, {'name': 'Layer 2'}]}, {'name': 'Background'}]
+            Example: [{'name': 'Group 1', 'visible': False, 'layers': [{'name': 'Layer 1', 'visible': True}]}, {'name': 'Background', 'visible': True}]
     """
 
     command = createCommand("getLayers", {})

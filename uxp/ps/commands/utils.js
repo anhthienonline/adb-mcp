@@ -214,7 +214,39 @@ const _saveDocumentAs = async (filePath, fileType) => {
 
 const execute = async (callback, commandName = "Executing command...") => {
     try {
-        return await core.executeAsModal(callback, {
+        return await core.executeAsModal(async (executionContext) => {
+            //commandName on executeAsModal only labels the progress UI. Without
+            //suspendHistory every internal mutation lands as its own native
+            //history state, so a single command can litter the history panel
+            //and take several undos to back out.
+            let hostControl = executionContext.hostControl;
+            let documentID = app.activeDocument ? app.activeDocument.id : null;
+            let suspensionID = null;
+
+            if (documentID !== null) {
+                try {
+                    suspensionID = await hostControl.suspendHistory({
+                        documentID: documentID,
+                        name: commandName,
+                    });
+                } catch (e) {
+                    //not fatal: fall back to unsuspended history
+                    console.log(`suspendHistory failed : ${e}`);
+                }
+            }
+
+            try {
+                return await callback(executionContext);
+            } finally {
+                if (suspensionID !== null) {
+                    try {
+                        await hostControl.resumeHistory(suspensionID);
+                    } catch (e) {
+                        console.log(`resumeHistory failed : ${e}`);
+                    }
+                }
+            }
+        }, {
             commandName: commandName,
         });
     } catch (e) {

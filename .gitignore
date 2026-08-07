@@ -3,6 +3,10 @@
 
 dist/
 
+# Quyen cua Claude Code — duong dan tuyet doi cua tung may, khong dung chung duoc
+.claude/settings.local.json
+.claude/*.bak
+
 .DS_Store
 .AppleDouble
 .LSOverride
