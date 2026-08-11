@@ -8,6 +8,34 @@ Dùng được với **Claude Code**, **Claude Desktop**, hoặc cả hai cùng 
 
 ---
 
+## Đường ngắn — 1 lệnh
+
+```bash
+git clone https://github.com/anhthienonline/adb-mcp.git && cd adb-mcp && git checkout local-fixes && ./install.sh
+```
+
+`install.sh` làm gọn các bước 2–6 bên dưới: `npm install` proxy, `uv sync` venv Python,
+đăng ký 5 MCP server với Claude Code, bật `PlayerDebugMode` + symlink 2 extension CEP,
+và **add sẵn 3 plugin UXP vào UXP Developer Tools** (ghi thẳng
+`plugins_workspace.json`, giữ nguyên plugin cũ). Chạy lại bao nhiêu lần cũng được.
+
+```bash
+./install.sh --with-brew    # cài luôn imagemagick / poppler / ghostscript / ffmpeg / uv …
+./install.sh --help         # các cờ khác: --skip-cep --skip-uxp --skip-mcp --scope local
+```
+
+Hai việc **không** tự động được, phải làm tay một lần: bật *Enable Developer Mode*
+trong Settings > Plugins của từng app UXP, và bấm **Load** trong UDT.
+
+```bash
+./start.sh     # mỗi lần dùng: bật proxy + in checklist Connect
+./doctor.sh    # kiểm cả 3 lớp, xem app nào thật sự đã nối
+```
+
+Phần còn lại của tài liệu là bản làm tay từng bước — đọc khi `doctor.sh` báo lỗi.
+
+---
+
 ## 0. Cần sẵn
 
 | | Bản đang chạy được |
