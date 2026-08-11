@@ -37,7 +37,8 @@ const {
     hasActiveSelection,
     _saveDocumentAs,
     convertFontSize,
-    convertFromPhotoshopFontSize
+    convertFromPhotoshopFontSize,
+    normalizeLineBreaks
 } = require("./utils");
 
 
@@ -138,6 +139,28 @@ const exportLayersAsPng = async (command) => {
     return results;
 };
 
+//The batchPlay fallback anchors by freeTransformCenterState, not by the
+//AnchorPosition the caller passed. Hardcoding QCSAverage made every anchor
+//behave as MIDDLECENTER: a TOPLEFT scale silently drifted by half the size
+//change and had to be corrected by hand.
+//
+//Only QCSAverage (= MIDDLECENTER) is used here. The corner/side states exist
+//(QCSCorner0.., QCSSide0..) but which one is top-left is not verified, and an
+//unverified mapping anchors to the wrong corner just as silently as the bug it
+//would replace. Reject other anchors loudly; scale about the centre and then
+//translate to place the result.
+const _quadCenterState = (anchorPosition) => {
+    let a = String(anchorPosition || "MIDDLECENTER").toUpperCase();
+
+    if (a === "MIDDLECENTER") {
+        return "QCSAverage";
+    }
+
+    throw new Error(
+        `scaleLayer : anchorPosition [${anchorPosition}] cannot be honoured for a layer inside an artboard - the batchPlay fallback only supports MIDDLECENTER. Scale about MIDDLECENTER, then translateLayer to the position you want.`
+    );
+};
+
 const scaleLayer = async (command) => {
     let options = command.options;
 
@@ -150,6 +173,15 @@ const scaleLayer = async (command) => {
         );
     }
 
+    //The anchor is NOT validated here on purpose. layer.scale() honours all nine
+    //AnchorPositions, so a layer outside an artboard must keep working with any
+    //of them; only the batchPlay fallback is limited. Validating up front broke
+    //that. The fallback runs only when the scale left the box unchanged, so
+    //throwing from inside it does not abandon a half-applied transform.
+    let before = layer.bounds;
+    let originWidth = before.right - before.left;
+    let originHeight = before.bottom - before.top;
+
     await execute(async () => {
         let anchor = getAnchorPosition(options.anchorPosition);
         let interpolation = getInterpolationMethod(options.interpolationMethod);
@@ -158,6 +190,61 @@ const scaleLayer = async (command) => {
             interpolation: interpolation,
         });
     });
+
+    if (options.width === 100 && options.height === 100) {
+        return;
+    }
+
+    //Same trap as translateLayer: layer.scale() resolves without error but does
+    //nothing for layers inside an artboard, because Photoshop re-nests the layer
+    //and cancels the transform. batchPlay's transform is not re-nested.
+    let after = layer.bounds;
+    if (
+        after.right - after.left === originWidth &&
+        after.bottom - after.top === originHeight
+    ) {
+        await execute(async () => {
+            selectLayer(layer, true);
+            await action.batchPlay(
+                [
+                    {
+                        _obj: "transform",
+                        _target: [
+                            {
+                                _ref: "layer",
+                                _enum: "ordinal",
+                                _value: "targetEnum",
+                            },
+                        ],
+                        freeTransformCenterState: {
+                            _enum: "quadCenterState",
+                            _value: _quadCenterState(options.anchorPosition),
+                        },
+                        width: {
+                            _unit: "percentUnit",
+                            _value: options.width,
+                        },
+                        height: {
+                            _unit: "percentUnit",
+                            _value: options.height,
+                        },
+                        _options: { dialogOptions: "dontDisplay" },
+                    },
+                ],
+                {}
+            );
+        }, "Scale layer (artboard fallback)");
+
+        after = layer.bounds;
+        if (
+            after.right - after.left === originWidth &&
+            after.bottom - after.top === originHeight
+        ) {
+            throw new Error(
+                `scaleLayer : Layer [${layerId}] did not scale, including via the batchPlay fallback.`
+            );
+        }
+    }
 };
 
 const rotateLayer = async (command) => {
@@ -327,27 +414,120 @@ const translateLayer = async (command) => {
     let xOffset = options.xOffset;
     let yOffset = options.yOffset;
 
-    let before = layer.bounds;
-    let originLeft = before.left;
-    let originTop = before.top;
-
-    await execute(async () => {
-        await layer.translate(xOffset, yOffset);
-    }, "Translate layer");
-
     if (!xOffset && !yOffset) {
         return;
     }
 
-    //layer.translate() resolves without error even when the layer never moves,
-    //which happens for layers inside an artboard: Photoshop re-nests them and
-    //cancels the offset. Report that instead of a false success.
-    let after = layer.bounds;
-    if (after.left === originLeft && after.top === originTop) {
-        throw new Error(
-            `translateLayer : Layer [${layerId}] did not move. Layers inside an artboard are re-nested by Photoshop, which cancels the offset.`
-        );
+    //One deterministic path, never translate()-then-maybe-fallback. Two traps
+    //made that pattern corrupt other artboards:
+    //  - layer.translate() is silently cancelled for layers inside an artboard,
+    //    because Photoshop re-nests the layer and drops the offset;
+    //  - layer.bounds is a cached snapshot, so a "did it move?" check cannot
+    //    tell a cancelled move from a successful one. When translate() HAD
+    //    worked, the stale read ran the fallback too and the layer moved twice.
+    //batchPlay's move is not re-nested, so use only that. It honours the
+    //targetEnum reference alone - passing _id makes it a silent no-op - so the
+    //layer has to be the selection, and the ONLY one: batchPlay's select adds
+    //to whatever is already selected, which silently drags the previous
+    //target along. Clear first (layer.selected alone does not stick for some
+    //layers inside artboards, area text especially), then select by id.
+    let before = await _readBounds(layer.id);
+
+    await execute(async () => {
+        await _selectOnly(layer);
+        await action.batchPlay([_offsetCommand(xOffset, yOffset)], {});
+    }, "Translate layer");
+
+    //Verify against a fresh read so a wrong-layer move cannot pass as success.
+    //Groups report no usable box (see _readBounds), so they are unverifiable -
+    //skip rather than fail a move that worked.
+    let after = await _readBounds(layer.id);
+
+    if (!before || !after) {
+        return;
     }
+
+    let movedX = after.left - before.left;
+    let movedY = after.top - before.top;
+
+    if (movedX === xOffset && movedY === yOffset) {
+        return;
+    }
+
+    //Roll back before reporting. Throwing on a document that HAS changed is what
+    //made callers compensate for a move they thought never happened, applying it
+    //a second time - a layer asked for +45 ended up at +90.
+    await execute(async () => {
+        await _selectOnly(layer);
+        await action.batchPlay([_offsetCommand(-movedX, -movedY)], {});
+    }, "Translate layer (rollback)");
+
+    throw new Error(
+        `translateLayer : Layer [${layerId}] asked for (${xOffset}, ${yOffset}) but moved (${movedX}, ${movedY}). The move has been rolled back.`
+    );
+};
+
+//"move" only honours the targetEnum reference - passing _id makes it a silent
+//no-op - so the layer has to be the selection, and the ONLY one: batchPlay's
+//select adds to whatever is already selected, which silently drags the previous
+//target along. Clear first (layer.selected alone does not stick for some layers
+//inside artboards, area text especially), then select by id.
+const _selectOnly = async (layer) => {
+    selectLayer(layer, true);
+
+    await action.batchPlay(
+        [
+            {
+                _obj: "select",
+                _target: [{ _ref: "layer", _id: layer.id }],
+                layerID: [layer.id],
+                makeVisible: false,
+                _options: { dialogOptions: "dontDisplay" },
+            },
+        ],
+        {}
+    );
+};
+
+const _offsetCommand = (xOffset, yOffset) => {
+    return {
+        _obj: "move",
+        _target: [{ _ref: "layer", _enum: "ordinal", _value: "targetEnum" }],
+        to: {
+            _obj: "offset",
+            horizontal: { _unit: "pixelsUnit", _value: xOffset },
+            vertical: { _unit: "pixelsUnit", _value: yOffset },
+        },
+        _options: { dialogOptions: "dontDisplay" },
+    };
+};
+
+//layer.bounds on the UXP object is cached; ask Photoshop directly instead.
+const _readBounds = async (layerId) => {
+    let result = await action.batchPlay(
+        [
+            {
+                _obj: "get",
+                _target: [{ _ref: "layer", _id: layerId }],
+            },
+        ],
+        {}
+    );
+
+    let b = result[0]?.bounds;
+
+    //A layer SET has no ink box: Photoshop answers with the whole artboard
+    //(measured 0,0,1472,1200) and never updates it, so a group that moved
+    //correctly reads as "moved (0,0)". Return null and let the caller skip
+    //verification rather than fail a move that worked.
+    if (!b || result[0]?.layerSection?._value === "layerSectionStart") {
+        return null;
+    }
+
+    return {
+        left: b.left._value !== undefined ? b.left._value : b.left,
+        top: b.top._value !== undefined ? b.top._value : b.top,
+    };
 };
 
 const setLayerProperties = async (command) => {
@@ -465,6 +645,210 @@ const rasterizeLayer = async (command) => {
     });
 };
 
+//Photoshop's RGBColor descriptor names the green channel "grain".
+const _rgbDescriptor = (color) => {
+    return {
+        _obj: "RGBColor",
+        red: color.red,
+        grain: color.green,
+        blue: color.blue,
+    };
+};
+
+//Resolves each requested range to [from, to) character indices. A range may be
+//given either as {text:"Delivered."} (first occurrence) or as {from, to}.
+const _resolveColorRanges = (colorRanges, contents) => {
+    let resolved = [];
+
+    for (const range of colorRanges) {
+        if (!range || !range.color) {
+            continue;
+        }
+
+        let from;
+        let to;
+
+        if (typeof range.text === "string" && range.text.length) {
+            from = contents.indexOf(range.text);
+
+            if (from < 0) {
+                throw new Error(
+                    `editTextLayer : colorRanges text not found in contents : "${range.text}"`
+                );
+            }
+
+            to = from + range.text.length;
+        } else {
+            from = range.from;
+            to = range.to;
+        }
+
+        if (!(from >= 0 && to > from && to <= contents.length)) {
+            throw new Error(
+                `editTextLayer : invalid colorRange [${from}, ${to}) for contents of length ${contents.length}`
+            );
+        }
+
+        resolved.push({ from: from, to: to, color: range.color });
+    }
+
+    return resolved.sort((a, b) => a.from - b.from);
+};
+
+//Photoshop replaces the whole textStyleRange list, so every character has to be
+//covered or the untouched runs fall back to defaults. The existing run's style
+//descriptor is copied verbatim and only its colour swapped: reconstructing the
+//descriptor from characterStyle would re-apply size in the wrong space on layers
+//that carry a transform, blowing the point size up.
+const _applyColorRanges = async (layer, contents, colorRanges) => {
+    let resolved = _resolveColorRanges(colorRanges, contents);
+
+    if (!resolved.length) {
+        return;
+    }
+
+    let current = await action.batchPlay(
+        [
+            {
+                _obj: "get",
+                _target: [{ _ref: "layer", _id: layer.id }],
+            },
+        ],
+        {}
+    );
+
+    let existing = current[0]?.textKey?.textStyleRange;
+
+    if (!existing || !existing.length) {
+        throw new Error(
+            `editTextLayer : could not read textStyleRange for layer [${layer.id}]`
+        );
+    }
+
+    let baseStyle = existing[0].textStyle;
+    let baseColor = baseStyle.color;
+
+    let segments = [];
+    let cursor = 0;
+
+    for (const range of resolved) {
+        if (range.from < cursor) {
+            throw new Error(
+                `editTextLayer : overlapping colorRanges at index ${range.from}`
+            );
+        }
+
+        if (range.from > cursor) {
+            segments.push({ from: cursor, to: range.from });
+        }
+
+        segments.push(range);
+        cursor = range.to;
+    }
+
+    if (cursor < contents.length) {
+        segments.push({ from: cursor, to: contents.length });
+    }
+
+    let textStyleRange = segments.map((segment) => {
+        return {
+            _obj: "textStyleRange",
+            from: segment.from,
+            to: segment.to,
+            textStyle: Object.assign({}, baseStyle, {
+                color: segment.color
+                    ? _rgbDescriptor(segment.color)
+                    : baseColor,
+            }),
+        };
+    });
+
+    selectLayer(layer, true);
+
+    await action.batchPlay(
+        [
+            {
+                _obj: "set",
+                _target: [
+                    {
+                        _ref: "textLayer",
+                        _enum: "ordinal",
+                        _value: "targetEnum",
+                    },
+                ],
+                to: {
+                    _obj: "textLayer",
+                    textStyleRange: textStyleRange,
+                },
+                _options: { dialogOptions: "dontDisplay" },
+            },
+        ],
+        {}
+    );
+};
+
+//Photoshop stores All Caps as a character attribute (fontCaps), not as the
+//characters themselves, so retyping the string in lower case cannot clear it.
+//Rewrites every run with the requested case, keeping the rest of its style.
+const _applyTextCase = async (layer, textCase) => {
+    let allowed = {
+        //Photoshop's fontCaps enum spells the off state "normal"; "normalCaps"
+        //is silently ignored and the run keeps whatever case it already had.
+        normal: "normal",
+        normalcaps: "normal",
+        allcaps: "allCaps",
+        smallcaps: "smallCaps",
+    };
+
+    let fontCaps = allowed[String(textCase).toLowerCase().replace(/[^a-z]/g, "")];
+
+    if (!fontCaps) {
+        throw new Error(
+            `editTextLayer : unknown textCase "${textCase}". Use normal, allCaps or smallCaps.`
+        );
+    }
+
+    let current = await action.batchPlay(
+        [{ _obj: "get", _target: [{ _ref: "layer", _id: layer.id }] }],
+        {}
+    );
+
+    let existing = current[0]?.textKey?.textStyleRange;
+
+    if (!existing || !existing.length) {
+        throw new Error(
+            `editTextLayer : could not read textStyleRange for layer [${layer.id}]`
+        );
+    }
+
+    let textStyleRange = existing.map((run) => {
+        return {
+            _obj: "textStyleRange",
+            from: run.from,
+            to: run.to,
+            textStyle: Object.assign({}, run.textStyle, {
+                fontCaps: { _enum: "fontCaps", _value: fontCaps },
+            }),
+        };
+    });
+
+    selectLayer(layer, true);
+
+    await action.batchPlay(
+        [
+            {
+                _obj: "set",
+                _target: [
+                    { _ref: "textLayer", _enum: "ordinal", _value: "targetEnum" },
+                ],
+                to: { _obj: "textLayer", textStyleRange: textStyleRange },
+                _options: { dialogOptions: "dontDisplay" },
+            },
+        ],
+        {}
+    );
+};
+
 const editTextLayer = async (command) => {
     let options = command.options;
 
@@ -492,7 +876,7 @@ const editTextLayer = async (command) => {
         console.log("fontName", options.fontName)
 
         if (contents != undefined) {
-            layer.textItem.contents = contents;
+            layer.textItem.contents = normalizeLineBreaks(contents);
         }
 
         if (fontSize != undefined) {
@@ -507,6 +891,22 @@ const editTextLayer = async (command) => {
 
         if (fontName != undefined) {
             layer.textItem.characterStyle.font = fontName;
+        }
+
+        //Before colorRanges, so that pass copies runs that already carry the
+        //requested case.
+        if (options.textCase != undefined) {
+            await _applyTextCase(layer, options.textCase);
+        }
+
+        //Runs last so it reads the font, size and base colour already applied
+        //above, and so its per-range colours are not overwritten by them.
+        if (options.colorRanges != undefined) {
+            await _applyColorRanges(
+                layer,
+                layer.textItem.contents,
+                options.colorRanges
+            );
         }
     });
 }
@@ -574,7 +974,7 @@ const createMultiLineTextLayer = async (command) => {
 
         let fontSize = convertFontSize(options.fontSize);
 
-        let contents = options.contents.replace(/\\n/g, "\n");
+        let contents = normalizeLineBreaks(options.contents);
 
         let a = await app.activeDocument.createTextLayer({
             //blendMode: constants.BlendMode.DISSOLVE,//ignored
@@ -689,7 +1089,7 @@ const createSingleLineTextLayer = async (command) => {
             //color:constants.LabelColors.BLUE,//ignored
             //opacity:50, //ignored
             //name: "layer name",//ignored
-            contents: options.contents,
+            contents: normalizeLineBreaks(options.contents),
             fontSize: fontSize,
             fontName: options.fontName, //"ArialMT",
             position: options.position, //y is the baseline of the text. Not top left

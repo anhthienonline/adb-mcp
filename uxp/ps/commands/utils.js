@@ -34,6 +34,19 @@ const convertFromPhotoshopFontSize = (photoshopFontSize) => {
     return photoshopFontSize / (app.activeDocument.resolution / 72);
 }
 
+// Photoshop's text engine only breaks lines on CR. Text arriving over JSON carries
+// LF, and callers often send a literal "\n" instead, so both are stored verbatim
+// and render as a missing-glyph box. Normalise every form to CR.
+const normalizeLineBreaks = (contents) => {
+    if (typeof contents !== "string") {
+        return contents;
+    }
+
+    return contents
+        .replace(/\\r\\n|\\n|\\r/g, "\r")
+        .replace(/\r\n|\n/g, "\r");
+}
+
 const createFile = async (filePath) => {
     let url = `file:${filePath}`
     const fd = await openfs.open(url, "a+");
@@ -359,6 +372,7 @@ module.exports = {
     listOpenDocuments,
     convertFromPhotoshopFontSize,
     convertFontSize,
+    normalizeLineBreaks,
     setVisibleAllLayers,
     _saveDocumentAs,
     getMostRecentlyModifiedFile,

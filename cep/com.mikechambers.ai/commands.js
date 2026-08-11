@@ -279,10 +279,22 @@ async function executeExtendScript(command) {
     const options = command.options
     const scriptString = options.scriptString;
 
+    // Script nguoi dung duoc boc trong mot IIFE RIENG roi moi JSON.stringify.
+    // Truoc day script duoc chen thang vao day, nen `return {...}` tra ve object
+    // tho va CEP ep thanh chuoi "[object Object]" — moi ket qua co cau truc deu
+    // mat sach. Cung cach lam nhu plugin AfterEffects.
     const script = `
         (function() {
             try {
-                ${scriptString}
+                var result = (function() {
+                    ${scriptString}
+                })();
+
+                if (result === undefined) {
+                    return 'null';
+                }
+
+                return JSON.stringify(result);
             } catch(e) {
                 return JSON.stringify({
                     error: e.toString(),
@@ -291,10 +303,12 @@ async function executeExtendScript(command) {
             }
         })();
     `;
-    
-    const result = await executeCommand(script);
-    
-    return createPacket(result);
+
+    // executeCommand da JSON.parse san. Boc them createPacket se stringify lan
+    // hai va nhet vao {content:[{text:...}]}, nguoi goi phai go hai lop moi lay
+    // duoc du lieu. Plugin AfterEffects tra thang ket qua, va docstring cua
+    // execute_extend_script cung hua tra "the result" — nen tra thang.
+    return await executeCommand(script);
 }
 
 const createPacket = (result) => {

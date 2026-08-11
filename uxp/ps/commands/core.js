@@ -38,8 +38,6 @@ const {
     listOpenDocuments
 } = require("./utils");
 
-const { rasterizeLayer } = require("./layers").commandHandlers;
-
 const openFile = async (command) => {
     let options = command.options;
 
@@ -57,6 +55,89 @@ const openFile = async (command) => {
     });
 };
 
+//Scales the placed layer to cover the slot it replaced, centres it there and
+//masks it to the slot. Without this the image lands centred on the canvas at its
+//own size, which inside an artboard means it covers the artwork around it.
+const _fitLayerToBounds = async (layer, target) => {
+    let targetWidth = target.right - target.left;
+    let targetHeight = target.bottom - target.top;
+    let current = layer.bounds;
+    let currentWidth = current.right - current.left;
+    let currentHeight = current.bottom - current.top;
+
+    if (!currentWidth || !currentHeight || !targetWidth || !targetHeight) {
+        return;
+    }
+
+    //Cover, not contain: the slot must be filled edge to edge.
+    let scale =
+        Math.max(targetWidth / currentWidth, targetHeight / currentHeight) * 100;
+
+    await layer.scale(scale, scale, constants.AnchorPosition.MIDDLECENTER);
+
+    current = layer.bounds;
+    let dx = Math.round(
+        (target.left + targetWidth / 2) - (current.left + (current.right - current.left) / 2)
+    );
+    let dy = Math.round(
+        (target.top + targetHeight / 2) - (current.top + (current.bottom - current.top) / 2)
+    );
+
+    if (dx || dy) {
+        selectLayer(layer, true);
+        await action.batchPlay(
+            [
+                {
+                    _obj: "move",
+                    _target: [
+                        { _ref: "layer", _enum: "ordinal", _value: "targetEnum" },
+                    ],
+                    to: {
+                        _obj: "offset",
+                        horizontal: { _unit: "pixelsUnit", _value: dx },
+                        vertical: { _unit: "pixelsUnit", _value: dy },
+                    },
+                    _options: { dialogOptions: "dontDisplay" },
+                },
+            ],
+            {}
+        );
+    }
+
+    //Clip the overflow away so the image reads as the slot, not a loose photo.
+    selectLayer(layer, true);
+    await action.batchPlay(
+        [
+            {
+                _obj: "set",
+                _target: [{ _ref: "channel", _property: "selection" }],
+                to: {
+                    _obj: "rectangle",
+                    top: { _unit: "pixelsUnit", _value: target.top },
+                    left: { _unit: "pixelsUnit", _value: target.left },
+                    bottom: { _unit: "pixelsUnit", _value: target.bottom },
+                    right: { _unit: "pixelsUnit", _value: target.right },
+                },
+                _options: { dialogOptions: "dontDisplay" },
+            },
+            {
+                _obj: "make",
+                new: { _class: "channel" },
+                at: { _ref: "channel", _enum: "channel", _value: "mask" },
+                using: { _enum: "userMaskEnabled", _value: "revealSelection" },
+                _options: { dialogOptions: "dontDisplay" },
+            },
+            {
+                _obj: "set",
+                _target: [{ _ref: "channel", _property: "selection" }],
+                to: { _enum: "ordinal", _value: "none" },
+                _options: { dialogOptions: "dontDisplay" },
+            },
+        ],
+        {}
+    );
+};
+
 const placeImage = async (command) => {
     let options = command.options;
     let layerId = options.layerId;
@@ -65,6 +146,16 @@ const placeImage = async (command) => {
     if (!layer) {
         throw new Error(`placeImage : Could not find layerId : ${layerId}`);
     }
+
+    //placeEvent replaces the target layer, so its slot geometry and name have to
+    //be read before the call or they are gone.
+    let slot = {
+        left: layer.bounds.left,
+        top: layer.bounds.top,
+        right: layer.bounds.right,
+        bottom: layer.bounds.bottom,
+    };
+    let slotName = layer.name;
 
     await execute(async () => {
         selectLayer(layer, true);
@@ -115,13 +206,21 @@ const placeImage = async (command) => {
                 ],
                 to: {
                     _obj: "layer",
-                    name: layerId,
+                    name: slotName,
                 },
             },
         ];
 
         await action.batchPlay(commands, {});
-        await rasterizeLayer(command);
+
+        //placeEvent leaves the new smart object selected. It carries a fresh id,
+        //so rasterizing via the caller's now-dead layerId always threw; the layer
+        //is left as a smart object instead, which keeps the placement editable.
+        let placed = app.activeDocument.activeLayers[0];
+
+        if (placed) {
+            await _fitLayerToBounds(placed, slot);
+        }
     });
 };
 

@@ -966,22 +966,33 @@ def create_single_line_text_layer(
 
 @mcp.tool()
 def edit_text_layer(
-    layer_id:int, 
+    layer_id:int,
     text:str = None,
     font_size:int = None,
-    postscript_font_name:str = None, 
+    postscript_font_name:str = None,
     text_color:dict = None,
+    color_ranges:list = None,
+    text_case:str = None,
     ):
 
     """
     Edits the text content of an existing text layer in the current Photoshop document.
-    
+
+    Line breaks: pass "\\n" in text. It is converted to the carriage return Photoshop
+    needs, so multi-line headlines keep their line breaks and their block width.
+
     Args:
         layer_id (int): The ID of the existing text layer to edit.
         text (str): The new text content to replace the current text in the layer. If None, text will not be changed.
-        font_size (int): Font size. If None, size will not be changed.
+        font_size (int): Font size. If None, size will not be changed. Leave as None to preserve the layer's existing size, which is safer on layers that carry a transform.
         postscript_font_name (string): Postscript Font Name to display the text in. Valid list available via get_option_info. If None, font will not will not be changed.
-        text_color (dict): Color of the text expressed in Red, Green, Blue values between 0 and 255 in format of {"red":255, "green":255, "blue":255}. If None, color will not be changed
+        text_color (dict): Color of the whole layer expressed in Red, Green, Blue values between 0 and 255 in format of {"red":255, "green":255, "blue":255}. If None, color will not be changed
+        color_ranges (list): Optional per-range colors, for headlines where one word is a different color. Each entry is either
+            {"text": "Delivered.", "color": {"red":26,"green":92,"blue":224}} to color the first occurrence of that substring, or
+            {"from": 12, "to": 22, "color": {...}} to color a character range. Ranges must not overlap. Characters outside any
+            range keep the layer's base color, and the layer's font and size are preserved.
+        text_case (str): Optional "normal", "allCaps" or "smallCaps". All Caps is a character attribute in Photoshop,
+            so a layer styled that way keeps rendering upper case no matter what string you send; pass "normal" to clear it.
     """
 
     command = createCommand("editTextLayer", {
@@ -989,7 +1000,9 @@ def edit_text_layer(
         "contents":text,
         "fontSize": font_size,
         "fontName":postscript_font_name,
-        "textColor":text_color
+        "textColor":text_color,
+        "colorRanges":color_ranges,
+        "textCase":text_case
     })
 
     return sendCommand(command)

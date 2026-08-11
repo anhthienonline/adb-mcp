@@ -1,100 +1,47 @@
-# Quickstart — dựng lại trên máy khác
+# Cài đặt
 
-> Đây là **bản fork**. Toàn bộ phần lõi là của **Mike Chambers**
-> ([mikechambers/adb-mcp](https://github.com/mikechambers/adb-mcp), giấy phép MIT).
-> Fork này chỉ mang thêm vài bản vá lỗi cho luồng PSD → After Effects.
-> Xem [README.md](README.md) để biết chính xác khác gì bản gốc.
+> Bản fork của [mikechambers/adb-mcp](https://github.com/mikechambers/adb-mcp) (Mike Chambers, MIT).
+> Xem [README.md](README.md).
 
 Điều khiển Photoshop / Premiere / InDesign / After Effects / Illustrator bằng AI qua MCP.
-
-```
-AI (Claude Code hoặc Claude Desktop)
-      ↓  MCP (stdio)
-MCP server  —  Python, thư mục mcp/
-      ↓  socket.io  ws://localhost:3001
-Proxy server  —  Node, thư mục adb-proxy-socket/
-      ↓  socket.io
-Plugin trong app  —  UXP (PS/ID/PR)  hoặc  CEP (AE/AI)
-      ↓
-Adobe app
-```
-
-Proxy phải có mặt vì plugin UXP không được phép mở socket server, chỉ nối ra ngoài như client.
+Dùng được với **Claude Code**, **Claude Desktop**, hoặc cả hai cùng lúc.
 
 ---
 
-## 0. Cần sẵn trên máy
+## 0. Cần sẵn
 
-| | Bản đang chạy được | Ghi chú |
-| --- | --- | --- |
-| macOS | 15 (Darwin 25.6) | Windows có nhưng doc này viết cho Mac |
-| Node | v20.20.2 | proxy cần ≥18 |
-| uv | 0.12.0 | `brew install uv` |
-| Python | 3.12 | uv tự lo, chỉ cần ≥3.10 |
-| Adobe CC | PS 2026, AE 26.3 | AE cần ≥25.0 (CEP manifest ghi vậy) |
-| UXP Developer Tools | bản mới nhất | tải từ Creative Cloud Desktop |
-
-Kiểm nhanh:
+| | Bản đang chạy được |
+| --- | --- |
+| macOS | 15 (Darwin 25.6) |
+| Node | v20.20.2 (≥18) |
+| uv | 0.12.0 — `brew install uv` |
+| Python | 3.12 (≥3.10) |
+| Adobe CC | PS 2026, AE 26.3 (≥25.0) |
+| UXP Developer Tools | tải từ Creative Cloud Desktop |
 
 ```bash
 node --version && uv --version && which uv
 ```
 
-Nhớ đường dẫn `uv` in ra — lát nữa phải điền tuyệt đối vào config, Claude không đọc `PATH` của shell.
+Ghi lại đường dẫn `uv` — bước 4 cần điền tuyệt đối.
 
 ---
 
-## 1. Lấy code
+## 1. Clone
 
 ```bash
-git clone https://github.com/mikechambers/adb-mcp.git
+git clone https://github.com/anhthienonline/adb-mcp.git
 cd adb-mcp
 git checkout local-fixes
 ```
 
-> **Phải checkout `local-fixes`.** Nhánh `main` là bản upstream gốc và **thiếu** một loạt sửa lỗi
-> mà workflow đang dựa vào. Thiếu một cách im lặng — mọi thứ trông vẫn như chạy được.
-
-Kiểm nhanh là đúng nhánh:
-
 ```bash
 git rev-parse --abbrev-ref HEAD          # local-fixes
-grep -c "visible" mcp/ps-mcp.py          # > 0
-```
-
-### Nhánh đó sửa gì
-
-Nếu mất, đây là những thứ sẽ hỏng:
-
-| File | Sửa gì | Không có thì |
-| --- | --- | --- |
-| `uxp/ps/commands/utils.js` | bọc mọi lệnh trong `suspendHistory` | mỗi lệnh đẻ ra nhiều bước History, undo một phát không về được |
-| `uxp/ps/commands/layers.js` | thêm `visible` vào `getLayers` | không đọc được layer nào đang bật/tắt — cả hai skill PSD→AE đều cần |
-| " | rename giữ nguyên trạng thái ẩn/hiện | đổi tên một layer đang ẩn thì nó **tự bật lên** |
-| " | `translateLayer` báo lỗi khi không dịch được | trong artboard nó **báo thành công mà không di chuyển gì** |
-| " | bỏ `executeAsModal` lồng nhau ở `exportLayersAsPng` | khôi phục visibility luôn thất bại |
-| `uxp/ps/commands/core.js` | `setActiveDocument` duyệt `app.documents` | gán nhầm object rỗng, đổi document không ăn |
-| `mcp/ae-mcp.py` | thêm `get_project_info`, `get_compositions`, `get_layers` | AE chỉ còn đúng 1 tool `execute_extend_script` |
-| `cep/com.mikechambers.ae/commands.js` | đăng ký 3 handler trên, bỏ bọc gói hai lần, `decodeURI` tên file | 3 tool trên gọi vào là lỗi; tên file hiện ra `%20` |
-| `mcp/ps-mcp.py` | tả lại docstring `get_layers` | AI hiểu sai `visible` là đã tính cả nhóm cha |
-
-### Khi đẩy thay đổi lên nhánh này
-
-`.claude/settings.local.json` và `.claude/*.bak` đã được chặn trong `.gitignore` — chúng là danh
-sách quyền của riêng từng máy, toàn đường dẫn tuyệt đối, đẩy lên repo công khai là vừa vô dụng vừa
-lộ cấu trúc thư mục cá nhân.
-
-Đẩy lên `mikechambers/adb-mcp` cần quyền ghi vào repo đó. Nếu `git push` bị từ chối thì fork về
-tài khoản mình rồi trỏ lại:
-
-```bash
-git remote set-url origin https://github.com/<tai-khoan>/adb-mcp.git
-git push -u origin local-fixes
 ```
 
 ---
 
-## 2. Proxy server (Node)
+## 2. Proxy server
 
 ```bash
 cd <repo>/adb-proxy-socket
@@ -103,31 +50,17 @@ npm install
 
 ---
 
-## 3. MCP server (Python)
+## 3. MCP server
 
 ```bash
 cd <repo>/mcp
 uv sync
+uv run mcp run ps-mcp.py < /dev/null     # ra "running on stdio" la duoc
 ```
-
-Thử một phát cho chắc:
-
-```bash
-uv run mcp run ps-mcp.py < /dev/null
-```
-
-Ra `Adobe Photoshop MCP Server running on stdio` là được.
-
-> Đừng dùng `mcp install` hay `uv run --with ...` — chúng kéo về `mcp` 2.x và server sẽ chết với
-> `No module named 'mcp.server.fastmcp'`.
 
 ---
 
-## 4. Đăng ký MCP server
-
-### Claude Code
-
-Bốn lệnh, scope `user` để dùng được ở mọi thư mục:
+## 4A. Claude Code
 
 ```bash
 REPO=<duong dan tuyet doi toi repo>
@@ -137,26 +70,42 @@ claude mcp add -s user photoshop    -- "$UV" run --directory "$REPO/mcp" mcp run
 claude mcp add -s user premiere     -- "$UV" run --directory "$REPO/mcp" mcp run pr-mcp.py
 claude mcp add -s user aftereffects -- "$UV" run --directory "$REPO/mcp" mcp run ae-mcp.py
 claude mcp add -s user illustrator  -- "$UV" run --directory "$REPO/mcp" mcp run ai-mcp.py
+claude mcp add -s user indesign     -- "$UV" run --directory "$REPO/mcp" mcp run id-mcp.py
 ```
 
-Dấu `--` phải nằm **ngay sau tên server**; mọi thứ phía sau là lệnh và tham số. Đặt sai chỗ thì
-`uv` bị coi là tham số chứ không phải lệnh. Kiểm bằng `claude mcp get photoshop` — phải thấy
+`--` phải nằm ngay sau tên server. Kiểm bằng `claude mcp get photoshop`: phải ra
 `Command: …/uv` và `Args: run --directory …`.
 
-Thêm InDesign nếu cần: `id-mcp.py`.
-
-Kiểm tra:
+### Check
 
 ```bash
 claude mcp list
 ```
 
-Bốn dòng phải ra `✔ Connected`. Đây chỉ nghĩa là server Python chạy được — **chưa** nói gì về việc
-app Adobe đã nối hay chưa.
+Năm dòng Adobe phải ra `✔ Connected`.
 
-### Claude Desktop
+Trong Claude Code gõ `/mcp` — phải thấy năm server kèm số tool:
 
-*Settings > Developer > Edit Config*, đường dẫn phải tuyệt đối:
+```
+aftereffects  ✔ connected   4 tools
+illustrator   ✔ connected   5 tools
+photoshop     ✔ connected  62 tools
+premiere      ✔ connected  26 tools
+indesign      ✔ connected   1 tool
+```
+
+Số tool cũng là cách kiểm nhánh: **AE phải có 4 tool**. Nếu chỉ có 1 (`execute_extend_script`)
+là đang đứng ở nhánh `main`, quay lại bước 1.
+
+Vừa đăng ký xong mà `/mcp` chưa thấy thì gõ `/mcp reconnect all`, hoặc khởi động lại Claude Code.
+
+---
+
+## 4B. Claude Desktop
+
+*Settings > Developer > Edit Config*, hoặc sửa thẳng
+`~/Library/Application Support/Claude/claude_desktop_config.json`.
+Đường dẫn phải **tuyệt đối** — Claude Desktop không đọc `PATH` của shell:
 
 ```json
 {
@@ -165,37 +114,53 @@ app Adobe đã nối hay chưa.
       "command": "/opt/homebrew/bin/uv",
       "args": ["run", "--directory", "<REPO>/mcp", "mcp", "run", "ps-mcp.py"]
     },
+    "premiere": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": ["run", "--directory", "<REPO>/mcp", "mcp", "run", "pr-mcp.py"]
+    },
     "aftereffects": {
       "command": "/opt/homebrew/bin/uv",
       "args": ["run", "--directory", "<REPO>/mcp", "mcp", "run", "ae-mcp.py"]
+    },
+    "illustrator": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": ["run", "--directory", "<REPO>/mcp", "mcp", "run", "ai-mcp.py"]
+    },
+    "indesign": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": ["run", "--directory", "<REPO>/mcp", "mcp", "run", "id-mcp.py"]
     }
   }
 }
 ```
 
-Config chỉ nạp lúc khởi động — sửa xong phải restart Claude Desktop.
+**Restart Claude Desktop** — config chỉ nạp lúc khởi động.
+
+### Check
+
+Bấm biểu tượng công cụ dưới khung chat: phải liệt kê năm server và tool của từng cái.
+Hoặc *Settings > Developer* — mỗi server một dòng kèm trạng thái.
+
+Không thấy gì thì xem log:
+
+```bash
+tail -30 ~/Library/Logs/Claude/mcp-server-photoshop.log
+```
 
 ---
 
 ## 5. Plugin UXP — Photoshop, InDesign, Premiere
 
-1. Trong Photoshop: *Settings > Plugins* → bật **Enable Developer Mode** → restart Photoshop.
-   Premiere cũng có mục tương tự.
-2. Mở **UXP Developer Tools** → *File > Add Plugin* → chọn:
+1. Trong app: *Settings > Plugins* → bật **Enable Developer Mode** → restart app.
+2. **UXP Developer Tools** → *File > Add Plugin* → chọn:
    - `<repo>/uxp/ps/manifest.json`
    - `<repo>/uxp/id/manifest.json`
    - `<repo>/uxp/pr/manifest.json`
 3. Bấm **Load** cạnh từng plugin.
 
-> Phải bấm **Load** lại **mỗi lần khởi động lại app**. Đây là chỗ hay quên nhất.
-
 ---
 
 ## 6. Extension CEP — After Effects, Illustrator
-
-CEP khó hơn UXP vì extension chưa ký, phải bật debug mode thủ công.
-
-**a. Bật PlayerDebugMode** (README gốc không nhắc, thiếu là extension không hiện trong menu):
 
 ```bash
 for v in 9 10 11 12; do
@@ -204,8 +169,6 @@ done
 killall cfprefsd
 ```
 
-**b. Tạo symlink:**
-
 ```bash
 mkdir -p ~/Library/Application\ Support/Adobe/CEP/extensions
 cd ~/Library/Application\ Support/Adobe/CEP/extensions
@@ -213,47 +176,39 @@ ln -s <repo>/cep/com.mikechambers.ae com.mikechambers.ae
 ln -s <repo>/cep/com.mikechambers.ai com.mikechambers.ai
 ```
 
-**c.** Khởi động lại AE / Illustrator, mở panel ở *Window > Extensions*.
+Restart AE / Illustrator.
 
 ---
 
-## 7. Skills (nếu cần workflow PSD → AE)
+## 7. Skills
 
-Skill nằm **ngoài repo**, ở `~/.claude/skills/`. Chép cả thư mục sang máy mới:
+Chép `~/.claude/skills/` sang máy mới:
 
 ```
-psd-to-ae-animate     dựng animation mới từ artboard PSD
-psd-to-ae-size-port   port comp AE đã xong sang size khác
-psd-naming-linter     dọn tên layer trong PSD
+psd-to-ae-animate
+psd-to-ae-size-port
+psd-naming-linter
 ```
-
-Hai skill đầu cần Python có **PIL** để đo pixel và so ảnh:
 
 ```bash
 python3 -c "import PIL; print(PIL.__version__)"
 ```
 
-**Font phải cài trên máy mới, và AE phải nhận diện được.** AE thay font thiếu mà không báo gì —
-bước kiểm pixel ở Phase 2 chính là chỗ bắt được lỗi đó, nhưng chỉ khi bạn không bỏ qua nó.
-
-`.claude/settings.local.json` trong repo là danh sách quyền của **riêng máy này**, toàn đường dẫn
-tuyệt đối. Chép sang máy khác phải sửa lại hết đường dẫn, hoặc bỏ qua và để nó tự sinh dần.
+Cài font mà thiết kế dùng, cho cả Photoshop lẫn After Effects.
 
 ---
 
-## Mỗi lần dùng — 4 bước
+## Mỗi lần dùng
 
-**1. Chạy proxy, để terminal mở nguyên:**
+**1.** Chạy proxy, để terminal mở nguyên:
 
 ```bash
 cd <repo>/adb-proxy-socket && node proxy.js
 ```
 
-Đợi dòng: `adb-mcp Command proxy server running on ws://localhost:3001`
+**2.** Mở app Adobe. Với PS / ID / PR: mở UXP Developer Tools, bấm **Load**.
 
-**2. Mở app Adobe.** Với PS/ID/PR: mở UXP Developer Tools, bấm **Load**.
-
-**3. Bấm Connect trong panel của app:**
+**3.** Bấm **Connect** trong panel:
 
 | App | Vào đâu |
 | --- | --- |
@@ -263,56 +218,60 @@ cd <repo>/adb-proxy-socket && node proxy.js
 | After Effects | *Window > Extensions > AfterEffects MCP Agent* |
 | Illustrator | *Window > Extensions > Illustrator MCP Agent* |
 
-Terminal proxy phải hiện:
-
-```
-User connected: Ud6L4CjMWGAeofYAAAAB
-Client Ud6L4CjMWGAeofYAAAAB registered for application: photoshop
-```
-
-Nút vẫn ghi "Connect" nghĩa là chưa nối được — quay lại bước 1.
-
-**4. Nạp instructions.** Claude Desktop: bấm **+** trong khung chat → *Add from Adobe Photoshop* →
-`config://get_instructions`. Claude Code: gọi thẳng tool là được.
+**4.** Claude Desktop: bấm **+** → *Add from Adobe Photoshop* → `config://get_instructions`.
+Claude Code: gọi thẳng tool.
 
 ---
 
 ## Kiểm tra toàn tuyến
 
-Chạy được đến cuối là mọi mắt xích đều thông:
+Ba lớp độc lập nhau. Lớp 1 và 2 đạt **không** có nghĩa là app Adobe đã nối.
+
+### Lớp 1 — server Python chạy được
+
+```bash
+claude mcp list                                    # Claude Code
+tail -30 ~/Library/Logs/Claude/mcp-server-*.log    # Claude Desktop
+```
+
+Chỉ chứng minh `uv run … ps-mcp.py` khởi động không lỗi. Vẫn báo Connected kể cả khi chưa mở
+app Adobe nào, thậm chí khi proxy chưa chạy.
+
+### Lớp 2 — client thấy tool
+
+`/mcp` trong Claude Code, hoặc biểu tượng công cụ trong Claude Desktop.
+Cho biết đã đăng ký đủ server chưa và đúng nhánh chưa (AE = 4 tool).
+
+### Lớp 3 — app Adobe thật sự nối
 
 ```bash
 lsof -nP -iTCP:3001 -sTCP:LISTEN     # proxy dang nghe
-claude mcp list                       # 4 dong Connected
 ```
 
-Rồi bảo Claude gọi `get_document_info` (Photoshop) hoặc `get_project_info` (AE). Ra dữ liệu thật
-là xong.
+```bash
+cd <repo>/mcp && uv run python - <<'EOF'
+import socket_client
+from socket_client import AppError
+for app in ("photoshop", "aftereffects", "illustrator", "indesign", "premiere"):
+    socket_client.configure(app=app, url="http://localhost:3001", timeout=6)
+    try:
+        socket_client.send_message_blocking(
+            {"application": app, "action": "__probe__", "options": {}}, timeout=6)
+        ok = True
+    except AppError:
+        ok = True          # plugin tra loi "unknown command" -> dang song
+    except Exception:
+        ok = False
+    print(f"  {app:14} {'OK' if ok else 'chua noi'}")
+EOF
+```
 
----
+### Đối chiếu
 
-## Khi lỗi
-
-| Triệu chứng | Xử lý |
-| --- | --- |
-| `error: Failed to spawn: mcp` | Đang đứng ở repo root — `cd mcp` trước |
-| `No module named 'mcp.server.fastmcp'` | Config còn dùng `--with` — đổi sang `--directory` |
-| `No module named 'pydantic_core._pydantic_core'` | `cd mcp && uv sync --reinstall` |
-| Claude báo **Server disconnected** | `tail -30 ~/Library/Logs/Claude/mcp-server-*.log` |
-| Claude không thấy tool nào | Restart Claude Desktop — config chỉ nạp lúc khởi động |
-| Nút Connect không đổi trạng thái | Proxy chưa chạy, hoặc bấm **Debug** trong UXP Developer Tools xem lỗi |
-| Panel CEP không hiện trong *Window > Extensions* | Chưa bật PlayerDebugMode, hoặc symlink sai — kiểm bằng `ls -la ~/Library/Application\ Support/Adobe/CEP/extensions` |
-| AE có mỗi 1 tool `execute_extend_script` | Chưa áp patch — xem mục 1 |
-| `get_layers` không có trường `visible` | Chưa áp patch, hoặc quên bấm **Load** lại sau khi sửa plugin |
-| Lệnh chạy xong mà **AE đứng im, không phản hồi** | AE đang kẹt hộp thoại. Nhìn cửa sổ AE, tắt hộp thoại đi. Photoshop trả lời mà AE thì không = kẹt dialog, không phải mất kết nối |
-| Đổi tên layer xong nó **tự bật hiện** | Chưa áp patch `layers.js` |
-| `translate_layer` báo OK mà layer không nhúc nhích | Layer nằm trong artboard — Photoshop tự nest lại và triệt tiêu offset. Có patch thì nó báo lỗi thay vì im lặng |
-
-## Sau khi sửa code thì phải nạp lại thế nào
-
-| Sửa ở đâu | Cần làm gì |
-| --- | --- |
-| `mcp/*.py` | restart Claude (Code hoặc Desktop) |
-| `uxp/**` | bấm **Reload** trong UXP Developer Tools |
-| `cep/**` | đóng panel rồi mở lại từ *Window > Extensions* |
-| `adb-proxy-socket/proxy.js` | Ctrl-C rồi `node proxy.js` lại, sau đó **Connect lại từ mọi app** |
+| Lớp 1 | Lớp 2 | Lớp 3 | Xử lý |
+| --- | --- | --- | --- |
+| Failed | — | — | Sai đường dẫn `uv`, hoặc chưa `uv sync` |
+| OK | thiếu server | — | Chưa `claude mcp add` server đó, hoặc chưa restart Claude Desktop |
+| OK | AE chỉ 1 tool | — | Đang ở nhánh `main` — `git checkout local-fixes` |
+| OK | OK | `chua noi` | Proxy chưa chạy, app chưa mở, hoặc chưa bấm **Connect** |
+| OK | OK | OK | Xong |
