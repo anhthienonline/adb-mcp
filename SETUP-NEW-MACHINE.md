@@ -31,7 +31,7 @@ Bốn thứ này không cài được bằng lệnh, phải có sẵn tài kho�
 | **Adobe Creative Cloud** đăng nhập được, có Illustrator / Photoshop / AE / InDesign / Premiere | Không có app thì cả stack vô nghĩa | thấy app trong CC Desktop
 | **Adobe Fonts đã activate Poppins** | Poppins trên máy cũ đến từ Adobe Fonts (`/Library/Fonts/Managed/`), **không phải file cài tay**. Preset `print-ad-from-brief` refuse build nếu thiếu font | `fonts.adobe.com` → Poppins → Active
 | **SSH key + `~/.ssh/config`** cho GitHub | Remote của repo dùng **host alias**, không phải `github.com` trực tiếp: `git@gh-anhthienonline:anhthienonline/adb-mcp.git`. Không có alias thì `git clone` fail dù key đúng | `ssh -T gh-anhthienonline`
-| **Backup `~/.claude/skills` + `~/.claude/commands`** | 13 skill + 4 command là công sức tự viết, không tải lại được từ đâu. Tổng ~20 MB | copy sang Dropbox/USB trước khi trả máy cũ
+| **Backup `~/.claude/skills` + `~/.claude/commands`** | 10 skill + 4 command là công sức tự viết, không tải lại được từ đâu. **`git clone` không kéo skill về** — repo này public nên `.claude/skills/` bị gitignore, vì skill chứa cây layer, mã job và convention đặt tên của khách hàng | copy sang Dropbox/USB trước khi trả máy cũ
 
 Nên copy luôn khối `mcpServers` trong `~/.claude.json` của máy cũ để đối chiếu ở Stage D.
 
@@ -241,14 +241,31 @@ Kiểm tra bằng `claude mcp list`, hoặc `/mcp` trong session.
 
 ### D3. Restore skills + commands
 
+Cả hai đều **không** có trong repo — repo public, mà skill chứa dữ liệu khách hàng. Phải
+nhận file riêng (Dropbox/USB/zip từ người giữ repo):
+
 ```bash
 mkdir -p ~/.claude
 cp -R <backup>/skills   ~/.claude/skills
 cp -R <backup>/commands ~/.claude/commands
-ls ~/.claude/skills | wc -l    # 13
+ls ~/.claude/skills | wc -l    # 10
 ```
 
 Xoá `__pycache__` nếu có mang theo: `find ~/.claude/skills -name __pycache__ -exec rm -rf {} +`
+
+Nếu thay vì vậy bạn đặt skill vào `<repo>/.claude/skills/` (để version bằng git riêng, hoặc
+để sửa cùng repo), thì nhớ skill trong project **chỉ nạp khi cwd nằm trong repo adb-mcp** —
+mà việc thật chạy ở folder job. Bắc sang user-scope bằng:
+
+```bash
+./install.sh --skills          # symlink từng skill sang ~/.claude/skills
+```
+
+Symlink chứ không copy, nên sửa trong repo là bản đang dùng đổi theo. Skill nào đã tồn tại
+thật ở `~/.claude/skills` thì script bỏ qua, không ghi đè.
+
+Cả hai đường đều cần: 10 skill (7 cần proxy Adobe, 3 chạy độc lập) và 4 command
+(`fb-post`, `gen-commit`, `review-change`, `review-pr`).
 
 ### D4. Connector claude.ai (Asana, Figma, Atlassian…)
 

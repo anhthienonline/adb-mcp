@@ -50,6 +50,23 @@ else
   bad "venv" "chua co $VENV_PY — chay ./install.sh"
 fi
 
+# Nguyen nhan thuc te cua "-32000: Connection closed" trong Claude Code:
+# uv khong spawn duoc .venv/bin/mcp, hoac shebang cua no tro vao python da mat.
+# Ca hai deu ra "No such file or directory (os error 2)" — khong phai loi python.
+MCP_CLI="$MCPDIR/.venv/bin/mcp"
+if [ ! -x "$MCP_CLI" ]; then
+  bad "mcp CLI" "thieu .venv/bin/mcp — cd $MCPDIR && uv pip install --force-reinstall 'mcp[cli]'"
+else
+  SHEBANG_PY="$(head -1 "$MCP_CLI" | sed 's/^#!//')"
+  if [ ! -x "$SHEBANG_PY" ]; then
+    bad "mcp CLI" "shebang tro '$SHEBANG_PY' khong ton tai — rm -rf $MCPDIR/.venv && cd $MCPDIR && uv sync"
+  elif "$MCP_CLI" --help >/dev/null 2>&1; then
+    good "mcp CLI" "$SHEBANG_PY"
+  else
+    bad "mcp CLI" "co file nhung khong chay — cd $MCPDIR && uv run mcp run ps-mcp.py (xem loi that)"
+  fi
+fi
+
 # ------------------------------------------------------------------ lop 2
 
 step "Lop 2 — Claude Code thay server"

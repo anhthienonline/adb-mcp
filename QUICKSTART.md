@@ -210,13 +210,21 @@ Restart AE / Illustrator.
 
 ## 7. Skills
 
-Chép `~/.claude/skills/` sang máy mới:
+**Không có trong repo** — repo này public, mà skill chứa cây layer, mã job và convention đặt
+tên của khách hàng. Xin file từ người giữ repo rồi chép vào `~/.claude/skills/`:
 
 ```
-psd-to-ae-animate
+illustrator-to-ae-motion     print-ad-from-brief        ← cần proxy + app Adobe mở
+indesign-to-ae-motion        psd-artboard-clone
+psd-to-ae-animate            psd-naming-linter
 psd-to-ae-size-port
-psd-naming-linter
+
+html-banner-task-brief       pdf-icons-to-svg           ← chạy độc lập
+static-banner-task-brief
 ```
+
+Đặt trong `<repo>/.claude/skills/` cũng được, nhưng khi đó chúng chỉ nạp lúc cwd nằm trong
+repo — chạy `./install.sh --skills` để symlink sang `~/.claude/skills`.
 
 ```bash
 python3 -c "import PIL; print(PIL.__version__)"
