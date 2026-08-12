@@ -34,8 +34,18 @@ else
   bad "gs" "MISSING (goi full path /opt/homebrew/bin/gs — alias 'gs' co the che)"
 fi
 
-BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
-if [ "$BRANCH" = "local-fixes" ]; then good "branch" "$BRANCH"; else bad "branch" "$BRANCH (can local-fixes)"; fi
+# Tai ZIP thi khong co .git — kiem bang noi dung. `main` co 1 tool AE, `local-fixes` co 4.
+AE_TOOLS=0
+[ -f "$MCPDIR/ae-mcp.py" ] && AE_TOOLS="$(grep -c '@mcp.tool' "$MCPDIR/ae-mcp.py" || true)"
+BRANCH=""
+if [ -d "$REPO/.git" ] && command -v git >/dev/null 2>&1; then
+  BRANCH="$(git -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
+if [ "$AE_TOOLS" -ge 4 ]; then
+  good "ban patch" "ae-mcp.py $AE_TOOLS tool${BRANCH:+ · branch $BRANCH}"
+else
+  bad "ban patch" "ae-mcp.py chi $AE_TOOLS tool — dang o 'main', thieu 3 fix bat buoc${BRANCH:+ (branch $BRANCH)}"
+fi
 
 # ------------------------------------------------------------------ lop 1
 
@@ -53,18 +63,15 @@ fi
 # Nguyen nhan thuc te cua "-32000: Connection closed" trong Claude Code:
 # uv khong spawn duoc .venv/bin/mcp, hoac shebang cua no tro vao python da mat.
 # Ca hai deu ra "No such file or directory (os error 2)" — khong phai loi python.
+# Thu chay, khong doan shebang: shebang co the la python tuyet doi, `/usr/bin/env python3`,
+# hoac wrapper `#!/bin/sh` khi duong dan qua dai — chi "chay duoc" moi la tin hieu that.
 MCP_CLI="$MCPDIR/.venv/bin/mcp"
 if [ ! -x "$MCP_CLI" ]; then
   bad "mcp CLI" "thieu .venv/bin/mcp — cd $MCPDIR && uv pip install --force-reinstall 'mcp[cli]'"
+elif "$MCP_CLI" --help >/dev/null 2>&1; then
+  good "mcp CLI" "chay duoc — $(head -1 "$MCP_CLI" | sed 's|^#!||' | awk '{print $1}')"
 else
-  SHEBANG_PY="$(head -1 "$MCP_CLI" | sed 's/^#!//')"
-  if [ ! -x "$SHEBANG_PY" ]; then
-    bad "mcp CLI" "shebang tro '$SHEBANG_PY' khong ton tai — rm -rf $MCPDIR/.venv && cd $MCPDIR && uv sync"
-  elif "$MCP_CLI" --help >/dev/null 2>&1; then
-    good "mcp CLI" "$SHEBANG_PY"
-  else
-    bad "mcp CLI" "co file nhung khong chay — cd $MCPDIR && uv run mcp run ps-mcp.py (xem loi that)"
-  fi
+  bad "mcp CLI" "co file nhung khong chay (repo bi doi ten?) — rm -rf $MCPDIR/.venv && cd $MCPDIR && uv sync"
 fi
 
 # ------------------------------------------------------------------ lop 2
@@ -105,7 +112,10 @@ for ext in com.mikechambers.ae com.mikechambers.ai; do
   fi
 done
 if [ -f "$UDT_WS" ]; then
-  /usr/bin/python3 - "$UDT_WS" "$REPO" <<'PY'
+  # Uu tien python cua venv — /usr/bin/python3 la stub Xcode CLT, may chua accept license
+  # thi no tu choi chay.
+  PYBIN="$VENV_PY"; [ -x "$PYBIN" ] || PYBIN=/usr/bin/python3
+  "$PYBIN" - "$UDT_WS" "$REPO" <<'PY'
 import json, sys
 ws, repo = sys.argv[1], sys.argv[2]
 try:

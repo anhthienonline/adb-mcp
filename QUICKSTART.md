@@ -10,9 +10,27 @@ Dùng được với **Claude Code**, **Claude Desktop**, hoặc cả hai cùng 
 
 ## Đường ngắn — 1 lệnh
 
+**Có git:**
+
 ```bash
 git clone https://github.com/anhthienonline/adb-mcp.git && cd adb-mcp && git checkout local-fixes && ./install.sh
 ```
+
+**Không có git** — tải ZIP. Phải đúng nhánh `local-fixes`, nút *Code → Download ZIP* trên
+GitHub cho nhánh mặc định (`main`) là **sai**:
+
+```bash
+curl -L -o adb-mcp.zip https://github.com/anhthienonline/adb-mcp/archive/refs/heads/local-fixes.zip
+unzip adb-mcp.zip && cd adb-mcp-local-fixes
+chmod +x *.sh          # neu ZIP mat exec bit
+./install.sh
+```
+
+Tải sai nhánh thì `install.sh` **tự chặn**: nó đếm số tool trong `mcp/ae-mcp.py` (4 trên
+`local-fixes`, 1 trên `main`) nên không cần git vẫn biết, và dừng luôn thay vì cài bản thiếu
+fix. Không có `.git` thì nó chỉ bỏ qua tên branch, mọi bước khác chạy như thường.
+
+Cách ZIP thiếu đúng một thứ: không `git pull` được, nên muốn cập nhật phải tải lại ZIP.
 
 `install.sh` làm gọn các bước 2–6 bên dưới: `npm install` proxy, `uv sync` venv Python,
 đăng ký 5 MCP server với Claude Code, bật `PlayerDebugMode` + symlink 2 extension CEP,
@@ -20,9 +38,15 @@ và **add sẵn 3 plugin UXP vào UXP Developer Tools** (ghi thẳng
 `plugins_workspace.json`, giữ nguyên plugin cũ). Chạy lại bao nhiêu lần cũng được.
 
 ```bash
-./install.sh --with-brew    # cài luôn imagemagick / poppler / ghostscript / ffmpeg / uv …
-./install.sh --help         # các cờ khác: --skip-cep --skip-uxp --skip-mcp --scope local
+./install.sh --bootstrap    # máy trắng: tự cài nvm + Node LTS, uv, và Claude Code
+./install.sh --with-brew    # cài luôn imagemagick / poppler / ghostscript / ffmpeg …
+./install.sh --help         # các cờ khác: --skip-cep --skip-uxp --skip-mcp --skills --scope
 ```
+
+`--bootstrap` không cần Homebrew, không cần git, không cần sudo — cài vào `~/.nvm` và
+`~/.local/bin`. Thiếu cái nào cài cái đó, có sẵn thì bỏ qua. Nó cũng thêm 3 dòng nạp nvm vào
+`~/.zshrc` nếu chưa có, vì installer của nvm hay đoán sai file profile và khi đó terminal mới
+không thấy `node`.
 
 Hai việc **không** tự động được, phải làm tay một lần: bật *Enable Developer Mode*
 trong Settings > Plugins của từng app UXP, và bấm **Load** trong UDT.

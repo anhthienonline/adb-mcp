@@ -8,13 +8,18 @@ Cấu hình tham chiếu là máy đang chạy được: **macOS 26.6, Apple Sil
 
 Thứ tự trong tài liệu này là thứ tự phụ thuộc thật — làm nhảy bước sẽ hỏng.
 
-> **Stage C và Stage D đã được đóng gói thành `./install.sh`** trong repo. Sau khi xong
-> Stage 0 / A / B (những thứ cần tài khoản, GUI, hoặc Creative Cloud), chạy:
+> **Stage A, C và D đã được đóng gói thành `./install.sh`** trong repo. Sau khi xong
+> Stage 0 và Stage B (những thứ cần tài khoản, GUI, hoặc Creative Cloud), chạy:
 >
 > ```bash
-> ./install.sh --with-brew     # proxy + venv + 5 MCP server + CEP symlink + UXP workspace
-> ./doctor.sh                  # kiểm cả 3 lớp
+> ./install.sh --bootstrap --with-brew   # node + uv + Claude Code + brew formula,
+>                                        # roi proxy + venv + 5 MCP server + CEP + UXP
+> ./doctor.sh                            # kiểm cả 3 lớp
 > ```
+>
+> `--bootstrap` tự cài **nvm + Node LTS, uv, và Claude Code** nếu thiếu — không cần
+> Homebrew, không cần git, không cần sudo. Bỏ `--with-brew` nếu chưa/không muốn cài
+> Homebrew; khi đó thiếu `poppler`/`ghostscript` nên skill `pdf-icons-to-svg` sẽ chết.
 >
 > Còn lại vẫn phải làm tay: bật Developer Mode trong từng app UXP, bấm **Load** trong UDT,
 > bấm **Connect** trong panel, restore `~/.claude/skills`, authorize connector claude.ai.
@@ -30,20 +35,22 @@ Bốn thứ này không cài được bằng lệnh, phải có sẵn tài kho�
 | --- | --- | ---
 | **Adobe Creative Cloud** đăng nhập được, có Illustrator / Photoshop / AE / InDesign / Premiere | Không có app thì cả stack vô nghĩa | thấy app trong CC Desktop
 | **Adobe Fonts đã activate Poppins** | Poppins trên máy cũ đến từ Adobe Fonts (`/Library/Fonts/Managed/`), **không phải file cài tay**. Preset `print-ad-from-brief` refuse build nếu thiếu font | `fonts.adobe.com` → Poppins → Active
-| **SSH key + `~/.ssh/config`** cho GitHub | Remote của repo dùng **host alias**, không phải `github.com` trực tiếp: `git@gh-anhthienonline:anhthienonline/adb-mcp.git`. Không có alias thì `git clone` fail dù key đúng | `ssh -T gh-anhthienonline`
+| **SSH key + `~/.ssh/config`** cho GitHub | Remote của repo có thể dùng **host alias** thay vì `github.com` trực tiếp — kiểm bằng `git remote -v`. Nếu remote là `git@<alias>:<owner>/adb-mcp.git` mà `~/.ssh/config` không khai `<alias>` thì `git clone` fail dù key đúng | `ssh -T <alias>` |
 | **Backup `~/.claude/skills` + `~/.claude/commands`** | 10 skill + 4 command là công sức tự viết, không tải lại được từ đâu. **`git clone` không kéo skill về** — repo này public nên `.claude/skills/` bị gitignore, vì skill chứa cây layer, mã job và convention đặt tên của khách hàng | copy sang Dropbox/USB trước khi trả máy cũ
 
 Nên copy luôn khối `mcpServers` trong `~/.claude.json` của máy cũ để đối chiếu ở Stage D.
 
-`~/.ssh/config` cần đúng dạng này:
+Dùng alias thì `~/.ssh/config` cần đúng dạng này — thay `<alias>` và `<keyfile>` bằng của bạn:
 
 ```
-Host gh-anhthienonline
+Host <alias>
   HostName github.com
   User git
-  IdentityFile ~/.ssh/id_ed25519_anhthienonline
+  IdentityFile ~/.ssh/<keyfile>
   IdentitiesOnly yes
 ```
+
+Không dùng alias thì bỏ qua cả bước này và clone bằng `git@github.com:<owner>/adb-mcp.git`.
 
 ---
 
@@ -132,10 +139,23 @@ Quit hẳn app Adobe rồi mở lại sau khi chạy.
 ```bash
 mkdir -p ~/Projects/Tool-FE-Helper/mcp-adb
 cd ~/Projects/Tool-FE-Helper/mcp-adb
-git clone git@gh-anhthienonline:anhthienonline/adb-mcp.git
+git clone https://github.com/anhthienonline/adb-mcp.git    # hoac git@<alias>:<owner>/adb-mcp.git
 cd adb-mcp
 git checkout local-fixes
 ```
+
+Máy không có git thì tải ZIP — **phải đúng nhánh**, nút *Download ZIP* trên GitHub lấy `main`:
+
+```bash
+cd ~/Projects/Tool-FE-Helper/mcp-adb
+curl -L -o adb-mcp.zip https://github.com/anhthienonline/adb-mcp/archive/refs/heads/local-fixes.zip
+unzip adb-mcp.zip && mv adb-mcp-local-fixes adb-mcp && cd adb-mcp
+chmod +x *.sh
+```
+
+`install.sh` và `doctor.sh` không cần git: chúng nhận diện bản patch bằng số tool trong
+`mcp/ae-mcp.py` (4 = `local-fixes`, 1 = `main`) rồi dừng nếu sai. Đổi lại, bản ZIP không
+`git pull` được — cập nhật phải tải lại.
 
 > **`local-fixes` không phải nhánh phụ — nó là nhánh bắt buộc.** Bản upstream có 3 chỗ hỏng đã
 > sửa trên nhánh này: extension Illustrator không trả structured data (mọi kết quả thành
