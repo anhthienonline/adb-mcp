@@ -38,7 +38,12 @@ const {
     _saveDocumentAs,
     convertFontSize,
     convertFromPhotoshopFontSize,
-    normalizeLineBreaks
+    normalizeLineBreaks,
+    resolveLayerTargets,
+    opt,
+    fileEntryExists,
+    deleteFileIfExists,
+    waitForFile
 } = require("./utils");
 
 
@@ -78,12 +83,234 @@ const _restoreVisibilityState = async (state) => {
     });
 };
 
+//Shows a layer AND every group above it. This is the bug that made this tool
+//write blank files: setVisibleAllLayers(false) hides the artboard groups too,
+//and a leaf inside a hidden group renders nothing however visible the leaf
+//itself is. The tool reported success and produced a canvas-sized PNG with
+//alpha 0 everywhere.
+const _showLayerAndAncestors = (layer) => {
+    let node = layer;
+
+    while (node) {
+        node.visible = true;
+        node = node.parent;
+    }
+};
+
+//Trimmed, per-layer cutouts. `exportSelectionAsFileTypePressed` crops to the
+//layer's own bounds and keeps transparency, so no visibility juggling and no
+//document save is involved at all. It names the file after the LAYER, so a
+//caller-supplied filename needs a rename afterwards.
+const _exportLayerTrimmed = async (layer, filePath) => {
+    let slash = filePath.lastIndexOf("/");
+    let destFolder = filePath.substring(0, slash);
+    let wanted = filePath.substring(slash + 1);
+
+    let dot = wanted.lastIndexOf(".");
+    let fileType = (dot === -1 ? "png" : wanted.substring(dot + 1)).toLowerCase();
+
+    //Export As names the file after the LAYER, so several layers sharing a name
+    //(one per artboard, which is the normal case) all target the same path.
+    //Clearing it first makes "has it appeared?" an honest question.
+    let produced = `${destFolder}/${layer.name}.${fileType}`;
+
+    //`produced` is named after the LAYER, not after the caller's filename, so
+    //when the two differ it can be somebody else's file: exporting layer "logo"
+    //to logo-300x250.png would otherwise delete an existing logo.png sitting in
+    //the same folder. Move it aside instead, and put it back in the finally
+    //below -- waitForFile still gets an honest question either way.
+    let stashName = null;
+
+    if (produced !== filePath && (await fileEntryExists(produced))) {
+        stashName = `${layer.name}.${fileType}.adb-mcp-stash`;
+        await deleteFileIfExists(`${destFolder}/${stashName}`);
+
+        let stale = await fs.getEntryWithUrl(`file:${produced}`);
+        let intoFolder = await fs.getEntryWithUrl(`file:${destFolder}`);
+
+        await stale.moveTo(intoFolder, { newName: stashName, overwrite: true });
+    } else {
+        await deleteFileIfExists(produced);
+    }
+
+    let out;
+
+    try {
+        out = await _exportSelectedLayerTo(
+            layer,
+            filePath,
+            destFolder,
+            wanted,
+            fileType,
+            produced
+        );
+    } finally {
+        if (stashName) {
+            //This must NEVER throw. A throw from a finally REPLACES the
+            //exception the try was raising, so a failed restore would bury the
+            //real "export never appeared" message -- and on the success path it
+            //would turn an export that is sitting correctly on disk into
+            //success:false. Report the stranded file instead; its path is
+            //deterministic, so the caller can put it back by hand.
+            try {
+                let stash = await fs.getEntryWithUrl(
+                    `file:${destFolder}/${stashName}`
+                );
+                let intoFolder = await fs.getEntryWithUrl(`file:${destFolder}`);
+
+                await stash.moveTo(intoFolder, {
+                    newName: `${layer.name}.${fileType}`,
+                    overwrite: true,
+                });
+            } catch (e) {
+                let stashPath = `${destFolder}/${stashName}`;
+
+                console.log(
+                    `exportLayersAsPng : could not restore ${stashPath} to ${produced} : ${e.message}`
+                );
+
+                if (out) {
+                    out.stashLeftAt = stashPath;
+                    out.warning = `${produced} was moved aside and could not be put back; it is at ${stashPath}`;
+                }
+            }
+        }
+    }
+
+    return out;
+};
+
+//The export itself, split out so _exportLayerTrimmed's finally can always
+//restore a file it moved aside, whether this threw or returned.
+const _exportSelectedLayerTo = async (
+    layer,
+    filePath,
+    destFolder,
+    wanted,
+    fileType,
+    produced
+) => {
+    //Two calls, two modal scopes: this verb reads a selection Photoshop has
+    //already committed, so selecting in the same call exports the previous
+    //target or nothing.
+    await execute(async () => {
+        await action.batchPlay(
+            [
+                {
+                    _obj: "select",
+                    _target: [{ _ref: "layer", _id: layer.id }],
+                    layerID: [layer.id],
+                    makeVisible: false,
+                    _options: { dialogOptions: "dontDisplay" },
+                },
+            ],
+            {}
+        );
+    }, "Select layer for export");
+
+    await execute(async () => {
+        await action.batchPlay(
+            [
+                {
+                    _obj: "exportSelectionAsFileTypePressed",
+                    _target: [
+                        {
+                            _ref: "layer",
+                            _enum: "ordinal",
+                            _value: "targetEnum",
+                        },
+                    ],
+                    fileType: fileType,
+                    quality: 32,
+                    metadata: 0,
+                    destFolder: destFolder,
+                    sRGB: true,
+                    openWindow: false,
+                },
+            ],
+            {}
+        );
+    }, "Export layer");
+
+    //Export As is ASYNCHRONOUS: it returns before the file is written. Without
+    //this wait the rename found nothing, and the next layer's select cancelled
+    //the pending export outright -- three layers exported, one file on disk.
+    let landed = await waitForFile(produced);
+
+    if (!landed) {
+        throw new Error(
+            `exportLayersAsPng : Photoshop reported success but ${produced} never appeared`
+        );
+    }
+
+    if (produced === filePath) {
+        return { savedFilePath: filePath, trimmed: true };
+    }
+
+    await deleteFileIfExists(filePath);
+
+    let entry = await fs.getEntryWithUrl(`file:${produced}`);
+    let folder = await fs.getEntryWithUrl(`file:${destFolder}`);
+
+    await entry.moveTo(folder, { newName: wanted, overwrite: true });
+
+    if (!(await waitForFile(filePath, 3000))) {
+        throw new Error(
+            `exportLayersAsPng : exported ${produced} but the rename to ${filePath} did not land`
+        );
+    }
+
+    return { savedFilePath: filePath, trimmed: true, renamedFrom: produced };
+};
+
 const exportLayersAsPng = async (command) => {
     let options = command.options;
     let layersInfo = options.layersInfo;
 
+    //TRIM is the default because a cutout is what "export this layer" means.
+    //CANVAS keeps the old behaviour: a full-canvas PNG with only this layer
+    //showing, which is what a compositing rebuild wants since every plate then
+    //shares one coordinate space.
+    let mode = String(opt(options.mode, "TRIM")).toUpperCase();
+
+    if (mode !== "TRIM" && mode !== "CANVAS") {
+        throw new Error(
+            `exportLayersAsPng : mode must be TRIM or CANVAS, got : ${options.mode}`
+        );
+    }
+
     const results = [];
 
+    if (mode === "TRIM") {
+        for (const info of layersInfo) {
+            let layer = findLayer(info.layerId);
+
+            try {
+                if (!layer) {
+                    throw new Error(
+                        `exportLayersAsPng : Could not find layer with ID : [${info.layerId}]`
+                    );
+                }
+
+                let out = await _exportLayerTrimmed(layer, info.filePath);
+
+                results.push({
+                    ...out,
+                    layerId: info.layerId,
+                    name: layer.name,
+                    success: true,
+                });
+            } catch (e) {
+                results.push({
+                    ...info,
+                    success: false,
+                    message: e.message,
+                });
+            }
+        }
+
+        return results;
+    }
 
     let originalState;
     await execute(async () => {
@@ -99,11 +326,11 @@ const exportLayersAsPng = async (command) => {
         try {
             if (!layer) {
                 throw new Error(
-                    `exportLayersAsPng: Could not find layer with ID: [${info.layerId}]` // Fixed error message
+                    `exportLayersAsPng : Could not find layer with ID : [${info.layerId}]`
                 );
             }
             await execute(async () => {
-                layer.visible = true;
+                _showLayerAndAncestors(layer);
             });
 
             let tmp = await _saveDocumentAs(info.filePath, "PNG");
@@ -111,6 +338,8 @@ const exportLayersAsPng = async (command) => {
             result = {
                 ...tmp,
                 layerId: info.layerId,
+                name: layer.name,
+                trimmed: false,
                 success: true
             };
 
@@ -122,8 +351,14 @@ const exportLayersAsPng = async (command) => {
             };
         } finally {
             if (layer) {
+                //hide the ancestors again as well, or the next layer's export
+                //carries this one's artboard with it
                 await execute(async () => {
-                    layer.visible = false;
+                    let node = layer;
+                    while (node) {
+                        node.visible = false;
+                        node = node.parent;
+                    }
                 });
             }
         }
@@ -161,28 +396,31 @@ const _quadCenterState = (anchorPosition) => {
     );
 };
 
-const scaleLayer = async (command) => {
-    let options = command.options;
-
-    let layerId = options.layerId;
-    let layer = findLayer(layerId);
-
-    if (!layer) {
-        throw new Error(
-            `scaleLayer : Could not find layer with ID : [${layerId}]`
-        );
-    }
+const _scaleLayerOne = async (layer, options) => {
+    let layerId = layer.id;
 
     //The anchor is NOT validated here on purpose. layer.scale() honours all nine
     //AnchorPositions, so a layer outside an artboard must keep working with any
     //of them; only the batchPlay fallback is limited. Validating up front broke
     //that. The fallback runs only when the scale left the box unchanged, so
     //throwing from inside it does not abandon a half-applied transform.
-    let before = layer.bounds;
-    let originWidth = before.right - before.left;
-    let originHeight = before.bottom - before.top;
+    //layer.bounds is a CACHED snapshot. Comparing it before and after made
+    //this function believe a scale that HAD worked did nothing, so it ran the
+    //batchPlay fallback as well and the layer was scaled TWICE -- 50% came out
+    //at 25%. Measured on three text layers inside artboards. Read the live
+    //bounds through batchPlay instead, exactly as translateLayer does.
+    let before = await _readBounds(layer.id);
 
     await execute(async () => {
+        //layer.scale() does NOT reliably act on the layer it is called on -- for
+        //layers inside an artboard it acts on Photoshop's CURRENT SELECTION.
+        //Measured: scaling layer 9 shrank layer 11 (the most recently created
+        //layer, still selected) by the requested 50% and left 9 untouched, after
+        //which the fallback scaled 9 as well. By name over three layers that
+        //compounded to 27% / 25% / 27% instead of 50%. Selecting the target
+        //first makes both paths hit the same layer.
+        await _selectOnly(layer);
+
         let anchor = getAnchorPosition(options.anchorPosition);
         let interpolation = getInterpolationMethod(options.interpolationMethod);
 
@@ -192,19 +430,33 @@ const scaleLayer = async (command) => {
     });
 
     if (options.width === 100 && options.height === 100) {
-        return;
+        return { verified: true, reason: "no-op at 100%" };
+    }
+
+    //A layer SET has no measurable ink box, so there is no way to tell a scale
+    //that worked from one that did not. Running the fallback on a guess is the
+    //worse failure -- that is what double-scales -- so report it instead.
+    let after = before ? await _readBounds(layer.id) : null;
+
+    if (!before || !after) {
+        return {
+            verified: false,
+            reason: "bounds not readable (layer set); scale not verified and the batchPlay fallback was skipped",
+        };
     }
 
     //Same trap as translateLayer: layer.scale() resolves without error but does
     //nothing for layers inside an artboard, because Photoshop re-nests the layer
     //and cancels the transform. batchPlay's transform is not re-nested.
-    let after = layer.bounds;
-    if (
-        after.right - after.left === originWidth &&
-        after.bottom - after.top === originHeight
-    ) {
+    if (after.width === before.width && after.height === before.height) {
         await execute(async () => {
-            selectLayer(layer, true);
+            //_selectOnly, NOT selectLayer: batchPlay's select ADDS to the
+            //current selection, and layer.selected alone does not stick for
+            //layers inside artboards. Measured with selectLayer here, scaling
+            //ONE layer shrank a second, unrelated layer in another artboard by
+            //the same 50%, and a by-name run over three layers left them at
+            //27%, 25% and 27% instead of 50%.
+            await _selectOnly(layer);
             await action.batchPlay(
                 [
                     {
@@ -235,16 +487,70 @@ const scaleLayer = async (command) => {
             );
         }, "Scale layer (artboard fallback)");
 
-        after = layer.bounds;
+        after = await _readBounds(layer.id);
+
         if (
-            after.right - after.left === originWidth &&
-            after.bottom - after.top === originHeight
+            after &&
+            after.width === before.width &&
+            after.height === before.height
         ) {
             throw new Error(
                 `scaleLayer : Layer [${layerId}] did not scale, including via the batchPlay fallback.`
             );
         }
+
+        return _verifyScale(layerId, before, after, options, true);
     }
+
+    return _verifyScale(layerId, before, after, options, false);
+};
+
+//"It changed" is not "it changed by the right amount". A selection that leaked
+//to other layers scaled this one twice, which still passes a did-anything-change
+//test. Check the ratio, and if it is wrong say so with the measured numbers --
+//do NOT roll back: the inverse of a percentage scale is not exact, so undoing it
+//would leave the layer a pixel or two off its original size.
+const _verifyScale = (layerId, before, after, options, usedFallback) => {
+    let out = {
+        verified: true,
+        usedFallback: usedFallback,
+        width: after.width,
+        height: after.height,
+    };
+
+    if (!before.width || !before.height) {
+        return out;
+    }
+
+    //A 75x8 text box scaled to 38x6 measures as 51% x 75%: at that size a single
+    //pixel of type rendering is 12% of the height. Too small to hold to a
+    //percentage, so say it is unverified rather than raise on rounding.
+    if (before.width < 24 || before.height < 24) {
+        out.verified = false;
+        out.reason = `box too small to verify (${before.width}x${before.height})`;
+        return out;
+    }
+
+    let gotW = (after.width / before.width) * 100;
+    let gotH = (after.height / before.height) * 100;
+
+    //generous: a few pixels of type rendering, plus rounding on small boxes
+    let tolerance = Math.max(6, options.width * 0.12);
+
+    if (
+        Math.abs(gotW - options.width) > tolerance ||
+        Math.abs(gotH - options.height) > tolerance
+    ) {
+        throw new Error(
+            `scaleLayer : Layer [${layerId}] asked for ${options.width}x${options.height}% but measured ${Math.round(
+                gotW
+            )}x${Math.round(
+                gotH
+            )}% (${before.width}x${before.height} -> ${after.width}x${after.height}). The document HAS changed - re-read the bounds, do not simply retry.`
+        );
+    }
+
+    return out;
 };
 
 const rotateLayer = async (command) => {
@@ -296,7 +602,7 @@ const deleteLayer = async (command) => {
 
     if (!layer) {
         throw new Error(
-            `setLayerVisibility : Could not find layer with ID : [${layerId}]`
+            `deleteLayer : Could not find layer with ID : [${layerId}]`
         );
     }
 
@@ -382,34 +688,16 @@ const groupLayers = async (command) => {
     });
 };
 
-const setLayerVisibility = async (command) => {
-    let options = command.options;
-
-    let layerId = options.layerId;
-    let layer = findLayer(layerId);
-
-    if (!layer) {
-        throw new Error(
-            `setLayerVisibility : Could not find layer with ID : [${layerId}]`
-        );
-    }
+const _setLayerVisibilityOne = async (layer, options) => {
+    let layerId = layer.id;
 
     await execute(async () => {
         layer.visible = options.visible;
     });
 };
 
-const translateLayer = async (command) => {
-    let options = command.options;
-
-    let layerId = options.layerId;
-    let layer = findLayer(layerId);
-
-    if (!layer) {
-        throw new Error(
-            `translateLayer : Could not find layer with ID : [${layerId}]`
-        );
-    }
+const _translateLayerOne = async (layer, options) => {
+    let layerId = layer.id;
 
     let xOffset = options.xOffset;
     let yOffset = options.yOffset;
@@ -524,31 +812,57 @@ const _readBounds = async (layerId) => {
         return null;
     }
 
+    let v = (x) => (x && x._value !== undefined ? x._value : x);
+
+    let left = v(b.left);
+    let top = v(b.top);
+    let right = v(b.right);
+    let bottom = v(b.bottom);
+
     return {
-        left: b.left._value !== undefined ? b.left._value : b.left,
-        top: b.top._value !== undefined ? b.top._value : b.top,
+        left: left,
+        top: top,
+        right: right,
+        bottom: bottom,
+        width: right - left,
+        height: bottom - top,
     };
 };
 
-const setLayerProperties = async (command) => {
-    let options = command.options;
+const _setLayerPropertiesOne = async (layer, options) => {
+    let layerId = layer.id;
 
-    let layerId = options.layerId;
-    let layer = findLayer(layerId);
-
-    if (!layer) {
-        throw new Error(
-            `setLayerProperties : Could not find layer with ID : [${layerId}]`
-        );
-    }
+    //Only write what the caller actually chose. Writing all four every time
+    //meant a call that set just the blend mode also reset opacity and fill to
+    //100 and un-clipped the layer -- and with layerName targeting, across every
+    //artboard at once. An omitted argument arrives as null, not undefined.
+    let given = (v) => v !== undefined && v !== null;
 
     await execute(async () => {
-        layer.blendMode = getBlendMode(options.blendMode);
-        layer.opacity = options.layerOpacity;
-        layer.fillOpacity = options.fillOpacity;
+        if (given(options.blendMode)) {
+            layer.blendMode = getBlendMode(options.blendMode);
+        }
 
-        if (layer.isClippingMask != options.isClippingMask) {
-            selectLayer(layer, true);
+        if (given(options.layerOpacity)) {
+            layer.opacity = options.layerOpacity;
+        }
+
+        if (given(options.fillOpacity)) {
+            layer.fillOpacity = options.fillOpacity;
+        }
+
+        if (
+            given(options.isClippingMask) &&
+            layer.isClippingMask != options.isClippingMask
+        ) {
+            //_selectOnly, NOT selectLayer: `groupEvent`/`ungroup` below act on
+            //targetEnum, and `layer.selected = true` alone does not stick for
+            //layers inside artboards -- the same trap that made scaleLayer clip
+            //the wrong layer in another artboard. Now that layerName targets
+            //every artboard at once, a selection that did not land means
+            //clipping is applied to whatever else was selected.
+            await _selectOnly(layer);
+
             let command = options.isClippingMask
                 ? {
                     _obj: "groupEvent",
@@ -1388,6 +1702,63 @@ const getLayerImage = async (command) => {
 
     return out;
 };
+
+/* ------------------------------------------------------------------------
+ * Bulk targeting
+ *
+ * A banner PSD repeats one set of layer names once per artboard, so almost
+ * every real task is "do this to layer X in all 21 artboards". These wrappers
+ * let a single call name its targets by layerId, layerIds or layerName and run
+ * the existing single-layer logic over each match. Failures are collected per
+ * layer instead of aborting the run: one bad layer must not leave the other
+ * twenty half-applied with no report of what actually landed.
+ * ---------------------------------------------------------------------- */
+
+const _runOverTargets = async (name, worker, options) => {
+    let targets = resolveLayerTargets(options);
+
+    let applied = [];
+    let failed = [];
+
+    for (const layer of targets) {
+        try {
+            let detail = await worker(layer, options);
+
+            applied.push(
+                Object.assign({ layerId: layer.id, name: layer.name }, detail || {})
+            );
+        } catch (e) {
+            failed.push({
+                layerId: layer.id,
+                name: layer.name,
+                message: e.message,
+            });
+        }
+    }
+
+    if (!applied.length && failed.length) {
+        throw new Error(
+            `${name} : every target failed : ${failed
+                .map((f) => `[${f.layerId}] ${f.message}`)
+                .join(" | ")}`
+        );
+    }
+
+    return { applied: applied, count: applied.length, failed: failed };
+};
+
+const setLayerVisibility = async (command) =>
+    _runOverTargets("setLayerVisibility", _setLayerVisibilityOne, command.options);
+
+const setLayerProperties = async (command) =>
+    _runOverTargets("setLayerProperties", _setLayerPropertiesOne, command.options);
+
+const translateLayer = async (command) =>
+    _runOverTargets("translateLayer", _translateLayerOne, command.options);
+
+const scaleLayer = async (command) =>
+    _runOverTargets("scaleLayer", _scaleLayerOne, command.options);
+
 
 const commandHandlers = {
     renameLayers,

@@ -48,13 +48,16 @@ socket_client.configure(
 init(APPLICATION, socket_client)
 
 @mcp.tool()
-def call_batch_play_command(commands: list):
+def call_batch_play_command(commands: list, return_all: bool = False):
     """
     Executes arbitrary Photoshop batchPlay commands via MCP.
 
     Args:
         commands (str): A raw JSON string representing a list of batchPlay descriptors.
             This should be the exact JSON string you would pass to `batchPlay()` in a UXP plugin.
+        return_all (bool): False (default) returns only the FIRST descriptor's result.
+            Set True when the call reads data from several descriptors, otherwise every
+            result after the first is dropped and the call looks like it found nothing.
 
     Returns:
         Any: The result returned from Photoshop after executing the batchPlay command(s).
@@ -90,7 +93,8 @@ def call_batch_play_command(commands: list):
     command = createCommand(
         "executeBatchPlayCommand",
         {
-            "commands": commands
+            "commands": commands,
+            "returnAll": return_all
         }
     )
 

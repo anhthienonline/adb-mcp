@@ -186,6 +186,127 @@ const findLayer = (id, layers) => {
 };
 
 
+//Flattened list of every layer in the document, groups included.
+//JSON has no `undefined`: an omitted Python argument arrives as null. Checking
+//`=== undefined` therefore treats "not supplied" as a real value -- that is how
+//resizeArtboard built a rect with a null left edge, wrote it, and changed
+//nothing while reporting success. Every optional option goes through this.
+const opt = (value, fallback) => {
+    return value === undefined || value === null ? fallback : value;
+};
+
+const fileEntryExists = async (filePath) => {
+    try {
+        await fs.getEntryWithUrl(`file:${filePath}`);
+        return true;
+    } catch (e) {
+        return false;
+    }
+};
+
+const deleteFileIfExists = async (filePath) => {
+    try {
+        let entry = await fs.getEntryWithUrl(`file:${filePath}`);
+        await entry.delete();
+        return true;
+    } catch (e) {
+        return false;
+    }
+};
+
+//Photoshop's Export As is ASYNCHRONOUS. It returns before the file is on disk,
+//so a loop that exports several targets back to back changes the selection out
+//from under the pending export and files silently go missing -- measured: three
+//artboards exported, zero files written, while every call reported SUCCESS.
+//Wait for the file rather than trusting the verb.
+const waitForFile = async (filePath, timeoutMs = 8000, intervalMs = 100) => {
+    let waited = 0;
+
+    while (waited < timeoutMs) {
+        if (await fileEntryExists(filePath)) {
+            return true;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        waited += intervalMs;
+    }
+
+    return false;
+};
+
+const collectLayers = (layers, out = []) => {
+    if (!layers) {
+        layers = app.activeDocument.layers;
+    }
+
+    for (const layer of layers) {
+        out.push(layer);
+
+        if (layer.layers && layer.layers.length > 0) {
+            collectLayers(layer.layers, out);
+        }
+    }
+
+    return out;
+};
+
+//findLayerByName below only ever looks at the top level, which finds nothing in
+//a multi-artboard file where every layer of interest is nested inside an
+//artboard group. This returns ALL matches, which is the point: one banner name
+//deliberately repeats once per artboard.
+const findLayersByName = (name) => {
+    return collectLayers().filter((l) => l.name === name);
+};
+
+//Every bulk command takes the same three ways of naming its targets, so they
+//all resolve them the same way: explicit ids, a single id, or a name matched
+//across the whole document.
+const resolveLayerTargets = (options, excludeLayerId) => {
+    let targets = [];
+
+    if (options.layerIds && options.layerIds.length) {
+        for (const id of options.layerIds) {
+            let layer = findLayer(id);
+
+            if (!layer) {
+                throw new Error(
+                    `resolveLayerTargets : Could not find layerId : ${id}`
+                );
+            }
+
+            targets.push(layer);
+        }
+    } else if (options.layerId !== undefined && options.layerId !== null) {
+        let layer = findLayer(options.layerId);
+
+        if (!layer) {
+            throw new Error(
+                `resolveLayerTargets : Could not find layerId : ${options.layerId}`
+            );
+        }
+
+        targets.push(layer);
+    } else if (options.layerName) {
+        targets = findLayersByName(options.layerName);
+
+        if (!targets.length) {
+            throw new Error(
+                `resolveLayerTargets : No layers named : ${options.layerName}`
+            );
+        }
+    } else {
+        throw new Error(
+            "resolveLayerTargets : Requires layerId, layerIds or layerName"
+        );
+    }
+
+    if (excludeLayerId !== undefined && excludeLayerId !== null) {
+        targets = targets.filter((l) => l.id !== excludeLayerId);
+    }
+
+    return targets;
+};
+
 const findLayerByName = (name, layers) => {
     if (!layers) {
         layers = app.activeDocument.layers;
@@ -389,6 +510,13 @@ module.exports = {
     selectLayer,
     clearLayerSelections,
     findLayer,
+    collectLayers,
+    findLayersByName,
+    opt,
+    fileEntryExists,
+    deleteFileIfExists,
+    waitForFile,
+    resolveLayerTargets,
     execute,
     tokenify,
     getElementPlacement,

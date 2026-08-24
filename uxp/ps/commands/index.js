@@ -30,6 +30,8 @@ const layerStyles = require("./layer_styles")
 const filters = require("./filters")
 const selection = require("./selection")
 const layers = require("./layers")
+const artboards = require("./artboards")
+const textStyles = require("./text_styles")
 
 const parseAndRouteCommands = async (commands) => {
     if (!commands.length) {
@@ -76,7 +78,9 @@ const commandHandlers = {
     ...core.commandHandlers,
     ...adjustmentLayers.commandHandlers,
     ...layerStyles.commandHandlers,
-    ...layers.commandHandlers
+    ...layers.commandHandlers,
+    ...artboards.commandHandlers,
+    ...textStyles.commandHandlers
 };
 
 module.exports = {

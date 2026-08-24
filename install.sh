@@ -207,12 +207,16 @@ else
   SKIP_MCP=1
 fi
 
-# Xcode CLT chua accept license thi MOI cong cu no cung cap deu tu choi chay — git,
-# /usr/bin/python3, make... voi thong bao "You have not agreed to the Xcode license".
-# Script nay khong con can /usr/bin/python3 nua, nhung `git pull` sau nay se chet.
-if [ -x /usr/bin/python3 ] && ! /usr/bin/python3 -c pass >/dev/null 2>&1; then
-  warn "Xcode CLT chua accept license — git va /usr/bin/python3 se bao loi. Chay:
-        sudo xcodebuild -license accept"
+# /usr/bin/{git,clang,make,python3} tren macOS la MOT shim chung cua Xcode (cung md5).
+# Chua cai developer tools thi goi vao la bung hop thoai cai CLT — nen phai hoi
+# `xcode-select -p` truoc, no khong bung gi. Script nay khong dung tool nao cua Xcode:
+# python lay tu venv, git chi goi khi co .git, con lai la binary that cua macOS.
+if ! xcode-select -p >/dev/null 2>&1; then
+  ok "khong co Xcode developer tools — khong sao, script nay khong can"
+elif [ -x /usr/bin/python3 ] && ! /usr/bin/python3 -c pass >/dev/null 2>&1; then
+  warn "Xcode chua accept license — git va /usr/bin/python3 se bao loi. Chay:
+        sudo xcodebuild -license accept
+        (hoac tro sang CLT: sudo xcode-select --switch /Library/Developer/CommandLineTools)"
 fi
 
 # Alias 'gs' che ghostscript: shutil.which("gs") thay co, goi ra lai la git status.

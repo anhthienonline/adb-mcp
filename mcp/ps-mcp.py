@@ -162,28 +162,38 @@ def create_document(document_name: str, width: int, height:int, resolution:int, 
     return sendCommand(command)
 
 @mcp.tool()
-def export_layers_as_png(layers_info: list[dict[str, str|int]]):
-    """Exports multiple layers from the Photoshop document as PNG files.
-    
-    This function exports each specified layer as a separate PNG image file to its 
-    corresponding file path. The entire layer, including transparent space will be saved.
-    
+def export_layers_as_png(layers_info: list[dict[str, str|int]], mode: str = "TRIM"):
+    """Exports layers as separate PNG files.
+
     Args:
-        layers_info (list[dict[str, str|int]]): A list of dictionaries containing the export information.
-            Each dictionary must have the following keys:
-                - "layerId" (int): The ID of the layer to export as PNG. 
-                   This layer must exist in the current document.
-                - "filePath" (str): The absolute file path including filename where the PNG
-                   will be saved (e.g., "/path/to/directory/layername.png").
-                   The parent directory must already exist or the export will fail.
+        layers_info (list[dict[str, str|int]]): One dict per layer:
+                - "layerId" (int): ID of the layer to export.
+                - "filePath" (str): Absolute path including filename, e.g.
+                   "/path/to/dir/logo.png". The parent directory must already exist.
+        mode (str): "TRIM" (default) writes a cutout cropped to the layer's own bounds with
+            transparency -- what "export this layer" normally means. "CANVAS" writes a
+            full-canvas PNG with only that layer showing, so every file shares one
+            coordinate space; that is what a compositing rebuild in After Effects wants,
+            but on a multi-artboard document the canvas is the whole contact sheet, so
+            expect large mostly-empty files.
+
+    Returns:
+        A list, one entry per layer: {layerId, name, savedFilePath, trimmed, success} or
+        {layerId, filePath, success: false, message}. Failures are per layer; the rest
+        still run.
+
+    ALWAYS check the files. This tool used to report success for every layer and write
+    canvas-sized PNGs that were fully transparent: hiding all layers hides the artboard
+    GROUPS too, and a leaf inside a hidden group renders nothing no matter how visible the
+    leaf is. Both modes now handle that, but a blank PNG is still the failure to look for.
     """
-    
+
     command = createCommand("exportLayersAsPng", {
-        "layersInfo":layers_info
+        "layersInfo":layers_info,
+        "mode":mode
     })
 
     return sendCommand(command)
-
 
 
 @mcp.tool()
@@ -433,24 +443,48 @@ def rename_layers(
 
 @mcp.tool()
 def scale_layer(
-    layer_id:int,
     width:int,
     height:int,
-    anchor_position:str,
-    interpolation_method:str = "AUTOMATIC"
+    anchor_position:str = "MIDDLECENTER",
+    interpolation_method:str = "AUTOMATIC",
+    layer_id:int = None,
+    layer_ids:list[int] = None,
+    layer_name:str = None
 ):
-    """Scales the layer with the specified ID.
+    """Scales layers by a percentage.
 
     Args:
-        layer_id (int): ID of layer to be scaled.
         width (int): Percentage to scale horizontally.
         height (int): Percentage to scale vertically.
-        anchor_position (str): The anchor position to rotate around,
-        interpolation_method (str): Interpolation method to use when resampling the image
+        anchor_position (str): The anchor to scale around. For a layer INSIDE AN ARTBOARD
+            only MIDDLECENTER works -- the batchPlay path those layers need cannot honour
+            the other eight, and it raises rather than anchoring to the wrong corner
+            silently. Scale about MIDDLECENTER and then translate_layer into place.
+        interpolation_method (str): Interpolation to use when resampling.
+        layer_id (int, optional): A single layer's ID.
+        layer_ids (list[int], optional): Several layer IDs.
+        layer_name (str, optional): Every layer with this exact name.
+
+    Targeting: pass layer_id for one layer, layer_ids for an explicit set, or layer_name to
+    hit EVERY layer with that exact name anywhere in the document. In a multi-artboard
+    banner file the same layer name is repeated once per artboard, so layer_name is how one
+    call covers all of them. Exactly one of the three is needed; layer_ids beats layer_id,
+    which beats layer_name.
+
+    Returns:
+        {applied: [{layerId, name}], count, failed: [{layerId, name, message}]}. A layer that
+        fails is reported in `failed` and the rest still run -- so a partial result is
+        visible rather than silently half-applied. It raises only if EVERY target failed.
+
+    NOTE: scaling is RELATIVE, so one call applies the same percentage to targets of
+    different starting sizes. Sizes that differ per artboard need per-layer percentages
+    computed from get_layer_bounds.
     """
-    
+
     command = createCommand("scaleLayer", {
         "layerId":layer_id,
+        "layerIds":layer_ids,
+        "layerName":layer_name,
         "width":width,
         "height":height,
         "anchorPosition":anchor_position,
@@ -526,18 +560,39 @@ def delete_layer(
 
 @mcp.tool()
 def set_layer_visibility(
-    layer_id:int,
-    visible:bool
+    visible:bool,
+    layer_id:int = None,
+    layer_ids:list[int] = None,
+    layer_name:str = None
 ):
-    """Sets the visibility of the layer with the specified ID
+    """Shows or hides layers.
 
     Args:
-        layer_id (int): ID of the layer to set visibility
-        visible (bool): Whether the layer is visible
+        visible (bool): Whether the layers are visible.
+        layer_id (int, optional): A single layer's ID.
+        layer_ids (list[int], optional): Several layer IDs.
+        layer_name (str, optional): Every layer with this exact name.
+
+    Targeting: pass layer_id for one layer, layer_ids for an explicit set, or layer_name to
+    hit EVERY layer with that exact name anywhere in the document. In a multi-artboard
+    banner file the same layer name is repeated once per artboard, so layer_name is how one
+    call covers all of them. Exactly one of the three is needed; layer_ids beats layer_id,
+    which beats layer_name.
+
+    Returns:
+        {applied: [{layerId, name}], count, failed: [{layerId, name, message}]}. A layer that
+        fails is reported in `failed` and the rest still run -- so a partial result is
+        visible rather than silently half-applied. It raises only if EVERY target failed.
+
+    NOTE: this is the layer's own eye icon and is NOT inherited. Showing a layer whose
+    parent group is hidden renders nothing. In a frame-animation PSD visibility is recorded
+    PER TIMELINE FRAME, so this only writes the frame that is current.
     """
-    
+
     command = createCommand("setLayerVisibility", {
         "layerId":layer_id,
+        "layerIds":layer_ids,
+        "layerName":layer_name,
         "visible":visible
     })
 
@@ -1011,22 +1066,45 @@ def edit_text_layer(
 
 @mcp.tool()
 def translate_layer(
-    layer_id: int,
     x_offset:int = 0,
-    y_offset:int = 0
+    y_offset:int = 0,
+    layer_id: int = None,
+    layer_ids:list[int] = None,
+    layer_name:str = None
     ):
 
-    """
-        Moves the layer with the specified ID on the X and Y axis by the specified number of pixels.
+    """Moves layers on the X and Y axis by a number of pixels.
 
     Args:
-        layer_name (str): The name of the layer that should be moved.
-        x_offset (int): Amount to move on the horizontal axis. Negative values move the layer left, positive values right
-        y_offset (int): Amount to move on the vertical axis. Negative values move the layer down, positive values up
+        x_offset (int): Amount to move horizontally. Negative moves left, positive right.
+        y_offset (int): Amount to move vertically. Negative moves UP, positive moves DOWN
+            -- it follows the canvas y axis, where y grows downward. The old docstring here
+            claimed the opposite; measured, -30 moved a layer's top from 104 to 74.
+        layer_id (int, optional): A single layer's ID.
+        layer_ids (list[int], optional): Several layer IDs.
+        layer_name (str, optional): Every layer with this exact name.
+
+    Targeting: pass layer_id for one layer, layer_ids for an explicit set, or layer_name to
+    hit EVERY layer with that exact name anywhere in the document. In a multi-artboard
+    banner file the same layer name is repeated once per artboard, so layer_name is how one
+    call covers all of them. Exactly one of the three is needed; layer_ids beats layer_id,
+    which beats layer_name.
+
+    Returns:
+        {applied: [{layerId, name}], count, failed: [{layerId, name, message}]}. A layer that
+        fails is reported in `failed` and the rest still run -- so a partial result is
+        visible rather than silently half-applied. It raises only if EVERY target failed.
+
+    NOTE: the offset is the SAME for every target. Layers in different artboards start at
+    different coordinates, so one shared delta moves each by the same amount -- it does not
+    put them at the same place. For that, read each layer's bounds and issue per-layer
+    offsets.
     """
-    
+
     command = createCommand("translateLayer", {
         "layerId":layer_id,
+        "layerIds":layer_ids,
+        "layerName":layer_name,
         "xOffset":x_offset,
         "yOffset":y_offset
     })
@@ -1073,25 +1151,50 @@ def add_layer_mask_from_selection(
 
 @mcp.tool()
 def set_layer_properties(
-    layer_id: int,
-    blend_mode: str = "NORMAL",
-    layer_opacity: int = 100,
-    fill_opacity: int = 100,
-    is_clipping_mask: bool = False
+    blend_mode: str = None,
+    layer_opacity: int = None,
+    fill_opacity: int = None,
+    is_clipping_mask: bool = None,
+    layer_id: int = None,
+    layer_ids: list[int] = None,
+    layer_name: str = None
     ):
 
-    """Sets the blend mode and opacity properties on the layer with the specified ID
+    """Sets blend mode, opacity, fill opacity and clipping on layers.
+
+    Only the properties you actually pass are written; anything omitted is left exactly as
+    it is. Pass at least one of them, or the call does nothing but resolve its targets.
 
     Args:
-        layer_id (int): The ID of the layer whose properties should be updated
-        blend_mode (str): The blend mode for the layer
-        layer_opacity (int): The opacity for the layer (0 - 100)
-        fill_opacity (int): The fill opacity for the layer (0 - 100). Will ignore anny effects that have been applied to the layer.
-        is_clipping_mask (bool): A boolean indicating whether this layer will be clipped to (masked by) the layer below it
+        blend_mode (str, optional): The blend mode for the layers.
+        layer_opacity (int, optional): Opacity (0-100).
+        fill_opacity (int, optional): Fill opacity (0-100). Ignores any layer effects applied.
+        is_clipping_mask (bool, optional): Whether the layer is clipped to the layer below it.
+        layer_id (int, optional): A single layer's ID.
+        layer_ids (list[int], optional): Several layer IDs.
+        layer_name (str, optional): Every layer with this exact name.
+
+    Targeting: pass layer_id for one layer, layer_ids for an explicit set, or layer_name to
+    hit EVERY layer with that exact name anywhere in the document. In a multi-artboard
+    banner file the same layer name is repeated once per artboard, so layer_name is how one
+    call covers all of them. Exactly one of the three is needed; layer_ids beats layer_id,
+    which beats layer_name.
+
+    Returns:
+        {applied: [{layerId, name}], count, failed: [{layerId, name, message}]}. A layer that
+        fails is reported in `failed` and the rest still run -- so a partial result is
+        visible rather than silently half-applied. It raises only if EVERY target failed.
+
+    NOTE: this used to write all four properties on every call, so changing only the blend
+    mode silently reset opacity and fill to 100 and un-clipped the layer -- across every
+    artboard at once when targeting by layer_name. It no longer does; an omitted property is
+    not touched.
     """
-    
+
     command = createCommand("setLayerProperties", {
         "layerId":layer_id,
+        "layerIds":layer_ids,
+        "layerName":layer_name,
         "blendMode":blend_mode,
         "layerOpacity":layer_opacity,
         "fillOpacity":fill_opacity,
@@ -1303,6 +1406,905 @@ def add_drop_shadow_layer_style(
     })
 
     return sendCommand(command)
+
+@mcp.tool()
+def get_layer_effects(layer_id: int = None, layer_name: str = None):
+    """Reads the layer style (layer effects) already applied to layers in the open document.
+
+    Photoshop calls these "layer styles" / "fx": Drop Shadow, Inner Shadow, Outer Glow,
+    Inner Glow, Bevel & Emboss, Satin, Color Overlay, Gradient Overlay, Pattern Overlay
+    and Stroke. Use this to find where a style lives, and to capture a style a human
+    configured by hand so it can be replayed onto other layers with copy_layer_style
+    or apply_layer_effects.
+
+    Three modes:
+        - layer_id given: returns that layer's FULL raw layerEffects descriptor, which is
+          exactly what apply_layer_effects expects. This is the only lossless way to
+          reproduce a hand-tuned style.
+        - layer_name given: scans every layer with that name (all artboards) and reports
+          which ones carry a style.
+        - neither given: scans the whole document. Use this to locate a style when you do
+          not know which layer has it. Only layers that actually have effects are returned.
+          The scan narrows the field by the layer's fx eye, so a style that exists but was
+          toggled OFF is not listed -- read such a layer by layer_id instead.
+
+    Args:
+        layer_id (int, optional): ID of a single layer to read in full.
+        layer_name (str, optional): Restrict the scan to layers with this exact name.
+
+    Returns:
+        For layer_id: {layerId, name, effects: [human names], layerEffects: {raw descriptor}}.
+        For a scan: {scanned, layersWithEffects: [{layerId, name, effects}]}.
+        A layer with no style reports effects as an empty list and layerEffects as None.
+    """
+
+    command = createCommand("getLayerEffects", {
+        "layerId":layer_id,
+        "layerName":layer_name
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def copy_layer_style(
+    source_layer_id: int,
+    target_layer_name: str = None,
+    target_layer_ids: list[int] = None,
+    merge: bool = False
+    ):
+    """Copies the complete layer style from one layer onto other layers, byte for byte.
+
+    This is the tool for "I configured a Gradient Overlay (or any fx) by hand on one
+    artboard and want the identical thing on the same layer in every other artboard".
+    It reads the source layer's raw descriptor and writes that descriptor to each target,
+    so every setting -- gradient stops, angle, scale, blend mode, reverse, dither --
+    is preserved exactly. Re-authoring a style from parameters cannot guarantee that.
+
+    By default the targets are every OTHER layer in the document sharing the source
+    layer's name, which is the multi-artboard case. The source layer itself is always
+    excluded, so this is safe to re-run.
+
+    WARNING for multi-artboard files: a Gradient Overlay whose "Align with layer" box is
+    UNCHECKED (`align: false` in the descriptor) is measured against the whole canvas, not
+    the layer. Copied to layers sitting at different x/y -- which is exactly what separate
+    artboards are -- each one then renders a different slice of one document-wide gradient,
+    so the artboards do NOT match. Verified: three identical artboards came out solid blue,
+    gradient, and solid orange. If the copies look wrong, check that box on the source and
+    copy again. Every other setting is position-independent.
+
+    Args:
+        source_layer_id (int): ID of the layer whose style should be copied. It must
+            already have a style, otherwise this raises.
+        target_layer_name (str, optional): Name to match targets on. Defaults to the
+            source layer's own name.
+        target_layer_ids (list[int], optional): Explicit target layer IDs. Takes
+            precedence over target_layer_name.
+        merge (bool): False (default) replaces each target's whole style with the
+            source's. True keeps effects the target has that the source does not, and
+            overwrites the ones it shares. Note that `set layerEffects` in Photoshop is
+            always a whole-stack write, which is why replacing is the default and merging
+            has to read each target first.
+
+    Returns:
+        {source: {layerId, name}, effects: [human names copied], applied: [{layerId, name}], count}
+    """
+
+    command = createCommand("copyLayerStyle", {
+        "sourceLayerId":source_layer_id,
+        "targetLayerName":target_layer_name,
+        "targetLayerIds":target_layer_ids,
+        "merge":merge
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def apply_layer_effects(
+    layer_effects: dict,
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    merge: bool = False
+    ):
+    """Writes a raw layerEffects descriptor onto one or more layers.
+
+    Pair this with get_layer_effects(layer_id=...), which returns a descriptor in exactly
+    the shape this expects. Use it when the source style lives in another document, or
+    when it was captured earlier and needs replaying. To copy inside one document,
+    copy_layer_style is simpler.
+
+    Args:
+        layer_effects (dict): The raw descriptor, as returned in get_layer_effects'
+            `layerEffects` key. Keys are Photoshop effect names: dropShadow, innerShadow,
+            outerGlow, innerGlow, bevelEmboss, chromeFX (Satin), solidFill (Color
+            Overlay), gradientFill (Gradient Overlay), patternFill, frameFX (Stroke).
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name instead.
+            One of layer_ids or layer_name is required.
+        merge (bool): False (default) replaces each target's whole style. True merges on
+            top of what the target already has.
+
+    Returns:
+        {applied: [{layerId, name}], count}
+    """
+
+    command = createCommand("applyLayerEffects", {
+        "layerEffects":layer_effects,
+        "layerIds":layer_ids,
+        "layerName":layer_name,
+        "merge":merge
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def add_gradient_overlay_layer_style(
+    angle: int,
+    color_stops: list,
+    opacity_stops: list,
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    type: str = "LINEAR",
+    blend_mode: str = "NORMAL",
+    opacity: int = 100,
+    scale: int = 100,
+    reverse: bool = False,
+    dither: bool = False,
+    align_with_layer: bool = True,
+    merge: bool = True
+    ):
+    """Adds a Gradient Overlay layer style (fx) to layers, built from parameters.
+
+    This is a real layer EFFECT on the layer, unlike create_gradient_layer_style, which
+    despite its name creates a separate Gradient Fill layer above the target and does not
+    clip to it.
+
+    To reproduce a gradient a human already tuned in the Photoshop UI, do NOT rebuild it
+    here -- use copy_layer_style, which is lossless. Use this tool when the gradient is
+    being specified from scratch.
+
+    Args:
+        angle (int): Gradient angle (-180 to 180). 90 is bottom-to-top.
+        color_stops (list): Dicts defining color stops:
+            - location (int): Position (0-100) along the gradient.
+            - color (dict): RGB values (0-255 for red/green/blue).
+            - midpoint (int, optional): Transition bias (0-100, default 50).
+        opacity_stops (list): Dicts defining opacity stops:
+            - location (int): Position (0-100) along the gradient.
+            - opacity (int): Level (0=transparent, 100=opaque).
+            - midpoint (int, optional): Transition bias (0-100, default 50).
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name instead.
+            One of layer_ids or layer_name is required.
+        type (str): LINEAR, RADIAL, ANGLE, REFLECTED or DIAMOND.
+        blend_mode (str): Blend mode for the overlay. Defaults to NORMAL.
+        opacity (int): Overlay opacity (0-100).
+        scale (int): Gradient scale as a percentage (10-150).
+        reverse (bool): Flip the gradient direction.
+        dither (bool): Dither to reduce banding.
+        align_with_layer (bool): Align the gradient to the layer bounds rather than the
+            canvas. Photoshop's "Align with layer" checkbox. Keep the default True in a
+            multi-artboard file: with False the gradient spans the whole canvas, so the
+            same overlay on layers in different artboards renders differently in each.
+        merge (bool): True (default) keeps the layer's other effects. False replaces the
+            whole style with just this overlay -- `set layerEffects` is always a
+            whole-stack write in Photoshop, so without merging an existing stroke or drop
+            shadow is destroyed.
+
+    Returns:
+        {applied: [{layerId, name}], count}
+    """
+
+    command = createCommand("addGradientOverlayLayerStyle", {
+        "layerIds":layer_ids,
+        "layerName":layer_name,
+        "angle":angle,
+        "type":type,
+        "colorStops":color_stops,
+        "opacityStops":opacity_stops,
+        "blendMode":blend_mode,
+        "opacity":opacity,
+        "scale":scale,
+        "reverse":reverse,
+        "dither":dither,
+        "alignWithLayer":align_with_layer,
+        "merge":merge
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def remove_layer_effects(layer_ids: list[int] = None, layer_name: str = None):
+    """Removes the entire layer style (all effects) from one or more layers.
+
+    Args:
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name instead.
+            One of layer_ids or layer_name is required.
+
+    Returns:
+        {cleared: [{layerId, name}], count}
+    """
+
+    command = createCommand("removeLayerEffects", {
+        "layerIds":layer_ids,
+        "layerName":layer_name
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def get_artboards():
+    """Lists every artboard in the open document with its position and size.
+
+    Artboards are reported by the layer tools as plain groups, so this is the only way to
+    tell which top-level groups are really artboards and where their frames sit. Read this
+    before any resize or re-layout: artboard geometry is what the layout maths needs, and a
+    group's cached bounds are NOT the artboard rect.
+
+    Returns:
+        {count, artboards: [{layerId, name, left, top, right, bottom, width, height}]}
+        sorted left to right.
+    """
+
+    command = createCommand("getArtboards", {})
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def create_artboard(name: str, width: int, height: int, left: int = 0, top: int = 0):
+    """Creates a new, empty artboard.
+
+    Args:
+        name (str): Name for the artboard. Per-artboard export takes the output FILENAME
+            from this name, so put the size in it if the deliverable needs it.
+        width (int): Artboard width in pixels.
+        height (int): Artboard height in pixels.
+        left (int): X of the artboard's left edge in canvas coordinates.
+        top (int): Y of the artboard's top edge in canvas coordinates.
+
+    Place it clear of the existing artboards -- overlapping frames are what makes a later
+    resize unrecoverable. get_artboards then arrange_artboards is the safe way to find room.
+
+    Returns:
+        {layerId, name, left, top, right, bottom, width, height}
+    """
+
+    command = createCommand("createArtboard", {
+        "name":name,
+        "width":width,
+        "height":height,
+        "left":left,
+        "top":top
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def resize_artboard(
+    width: int = None,
+    height: int = None,
+    left: int = None,
+    top: int = None,
+    artboard_ids: list[int] = None,
+    artboard_name: str = None
+    ):
+    """Changes an artboard's frame size, holding its left/top corner by default.
+
+    Left and top are held on purpose so the frame only ever grows right and down. Growing
+    from the other side pushes layers outside the rect, and Photoshop EJECTS an ejected
+    layer to the document root where per-artboard export will never find it again.
+
+    ORDER MATTERS. Widening a frame while its neighbour sits 100px away makes the two
+    overlap, and unpicking that means deleting layers, which has its own traps. For a whole
+    set: arrange_artboards with a gap wider than any target size FIRST, then resize, lay out
+    the contents, and arrange_artboards again to tile them back.
+
+    Args:
+        width (int, optional): New width. Unchanged if omitted.
+        height (int, optional): New height. Unchanged if omitted.
+        left (int, optional): Move the left edge. Held by default.
+        top (int, optional): Move the top edge. Held by default.
+        artboard_ids (list[int], optional): Which artboards. Omit both filters for ALL.
+        artboard_name (str, optional): Artboards with this exact name.
+
+    Returns:
+        {applied: [{layerId, name, width, height}], count}. The rect is re-read from
+        Photoshop afterwards and this RAISES if it did not actually change -- the underlying
+        verb reports success while doing nothing, so a silent no-op is caught here.
+    """
+
+    command = createCommand("resizeArtboard", {
+        "width":width,
+        "height":height,
+        "left":left,
+        "top":top,
+        "artboardIds":artboard_ids,
+        "artboardName":artboard_name
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def move_artboard(
+    x_offset: int = 0,
+    y_offset: int = 0,
+    artboard_ids: list[int] = None,
+    artboard_name: str = None
+    ):
+    """Moves artboards by a pixel offset, carrying their contents with them.
+
+    Args:
+        x_offset (int): Pixels to move horizontally. Positive moves right.
+        y_offset (int): Pixels to move vertically. Positive moves down.
+        artboard_ids (list[int], optional): Which artboards. Omit both filters for ALL.
+        artboard_name (str, optional): Artboards with this exact name.
+
+    Returns:
+        {applied: [{layerId, name}], count}
+    """
+
+    command = createCommand("moveArtboard", {
+        "xOffset":x_offset,
+        "yOffset":y_offset,
+        "artboardIds":artboard_ids,
+        "artboardName":artboard_name
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def arrange_artboards(gap: int = 100, start_left: int = 0, start_top: int = 0):
+    """Tiles every artboard in one row, left to right, with a fixed gap.
+
+    This is the step that makes a multi-artboard resize tractable. Call it with a gap wider
+    than any target size BEFORE resizing anything, so a widened frame cannot land on its
+    neighbour; resize and lay out; then call it again with the final gap to tile them back.
+
+    Artboards keep their current left-to-right order.
+
+    Args:
+        gap (int): Pixels between artboards.
+        start_left (int): X for the first artboard's left edge.
+        start_top (int): Y for every artboard's top edge.
+
+    Returns:
+        {arranged: [{layerId, name, left, top, width, height, asRequested}], count,
+         drifted: [...], boundingWidth}. Positions are re-read from Photoshop, so
+         `asRequested` is measured rather than assumed; anything in `drifted` did not land
+         where it was asked to.
+    """
+
+    command = createCommand("arrangeArtboards", {
+        "gap":gap,
+        "startLeft":start_left,
+        "startTop":start_top
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def export_artboards(
+    dest_folder: str,
+    file_type: str = "png",
+    quality: int = 90,
+    artboard_ids: list[int] = None,
+    artboard_name: str = None
+    ):
+    """Exports each artboard to its own image file.
+
+    The OUTPUT FILENAME comes from the artboard's own name, not from any argument -- rename
+    the artboards first if the deliverable needs particular filenames.
+
+    Args:
+        dest_folder (str): Absolute path of the output folder. It must ALREADY exist --
+            nothing here creates it, and the call raises up front if it is missing.
+        file_type (str): "png", "jpg", "gif", "tiff" or "psd".
+        quality (int): Quality 0-100, for lossy types only. IGNORED for PNG: the underlying
+            verb reads that field as PNG bit depth, and a 0-100 value there makes the export
+            write nothing at all while still reporting success, so PNG is pinned to 32-bit.
+        artboard_ids (list[int], optional): Which artboards. Omit both filters for ALL.
+        artboard_name (str, optional): Artboards with this exact name.
+
+    Returns:
+        {exported: [{layerId, name, file}], count, requested, missing: [{layerId, name,
+         expectedFile}], note}
+
+    CHECK `count` AGAINST `requested`. Each file in `exported` was confirmed on disk before
+    this returned, but a partial export is NOT an error here: the underlying verb reports
+    SUCCESS even when it writes nothing, so an artboard that produced no file is reported in
+    `missing` and the rest still run. Only a run where NOTHING was written raises.
+    """
+
+    command = createCommand("exportArtboards", {
+        "destFolder":dest_folder,
+        "fileType":file_type,
+        "quality":quality,
+        "artboardIds":artboard_ids,
+        "artboardName":artboard_name
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def get_text_style(layer_id: int):
+    """Reads the typography of a text layer, run by run.
+
+    Photoshop stores character formatting as a list of styled RUNS over the string, so one
+    text layer can hold several fonts, sizes and colours. This reports each run in readable
+    form AND returns Photoshop's raw descriptor, which is what copy_text_style and
+    apply_text_style replay.
+
+    Use it before touching any text: `edit_text_layer` with text_color silently rewrote
+    GTAmerica-CondensedBold to MyriadPro-Regular, because writing one character attribute
+    replaces the whole run. Read first, and you can tell afterwards whether the font
+    survived.
+
+    Args:
+        layer_id (int): ID of the text layer.
+
+    Returns:
+        {layerId, name, contents, contentsLength, runCount,
+         runs: [{from, to, text, font, fontStyle, size, leading, tracking, color, allCaps,
+                 syntheticBold, syntheticItalic}],
+         textStyleRange: [raw descriptor]}
+        `leading` reads "auto" when auto-leading is on. Raises if the layer is not text.
+    """
+
+    command = createCommand("getTextStyle", {
+        "layerId":layer_id
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def copy_text_style(
+    source_layer_id: int,
+    target_layer_name: str = None,
+    target_layer_ids: list[int] = None,
+    mode: str = "UNIFORM"
+    ):
+    """Copies typography from one text layer onto other text layers, without touching their text.
+
+    This is the safe way to push a font, size, tracking, leading and colour across a banner
+    set: it writes Photoshop's own style descriptor back verbatim rather than setting
+    attributes one at a time, which is what destroys fonts.
+
+    By default the targets are every OTHER text layer sharing the source's name -- the
+    multi-artboard case. The source is always excluded, so re-running is safe. Layers that
+    are not text layers are reported in `skipped`, never edited.
+
+    Args:
+        source_layer_id (int): Text layer to copy the style FROM.
+        target_layer_name (str, optional): Name to match targets on. Defaults to the
+            source layer's own name.
+        target_layer_ids (list[int], optional): Explicit target IDs. Beats target_layer_name.
+        mode (str): "UNIFORM" (default) applies the source's FIRST run style to the whole of
+            each target's text. This is almost always what you want across sizes, because
+            the same headline wraps to one line at 728x90 and three at 300x600, so run
+            boundaries never line up. "PER_RUN" replays the source's exact run boundaries and
+            raises unless the target's text is the same length -- use it only for a genuine
+            mixed-style line, e.g. one bold word inside a sentence, on identical copy.
+
+    Returns:
+        {source: {layerId, name, fonts}, mode, applied: [{layerId, name, fonts, runCount}],
+         count, skipped: [{layerId, name, reason}]}
+        `fonts` on each applied layer is re-read from Photoshop after the write, so compare
+        it against the source's to confirm the font actually landed. A layer whose readback
+        failed comes back as {layerId, name, verified: false, reason} with no `fonts` -- the
+        style was written, it just could not be confirmed, so check that layer by hand.
+    """
+
+    command = createCommand("copyTextStyle", {
+        "sourceLayerId":source_layer_id,
+        "targetLayerName":target_layer_name,
+        "targetLayerIds":target_layer_ids,
+        "mode":mode
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def apply_text_style(
+    text_style_range: list,
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    uniform: bool = True
+    ):
+    """Writes a raw textStyleRange descriptor onto text layers.
+
+    Pair this with get_text_style, whose `textStyleRange` output is exactly the shape this
+    expects. Use it when the style was captured earlier or comes from another document; to
+    copy within one document, copy_text_style is simpler.
+
+    Args:
+        text_style_range (list): Raw descriptor from get_text_style's `textStyleRange`.
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name.
+            One of layer_ids or layer_name is required.
+        uniform (bool): True (default) applies the first run's style across each target's
+            whole string. False replays the run boundaries and raises on a length mismatch.
+
+    Returns:
+        {applied: [{layerId, name}], count, skipped: [{layerId, name, reason}]}
+    """
+
+    command = createCommand("applyTextStyle", {
+        "textStyleRange":text_style_range,
+        "layerIds":layer_ids,
+        "layerName":layer_name,
+        "uniform":uniform
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def add_inner_shadow_layer_style(
+    color: dict = {"red": 0, "green": 0, "blue": 0},
+    blend_mode: str = "MULTIPLY",
+    opacity: int = 35,
+    angle: int = 120,
+    distance: int = 5,
+    choke: int = 0,
+    size: int = 5,
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    merge: bool = True
+    ):
+    """Adds an Inner Shadow layer style -- a shadow cast INSIDE the layer's edges.
+
+    Args:
+        color (dict): Shadow colour as RGB 0-255.
+        blend_mode (str): Blend mode. MULTIPLY is Photoshop's default.
+        opacity (int): 0-100.
+        angle (int): Light direction, -180 to 180.
+        distance (int): Offset in pixels.
+        choke (int): Hardens the shadow's edge, 0-100.
+        size (int): Blur radius in pixels.
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name -- in a
+            multi-artboard file that is one call for the whole set. One of layer_ids or
+            layer_name is required.
+        merge (bool): True (default) keeps the layer's other effects. False replaces the
+            whole style with just this one, because `set layerEffects` is always a
+            whole-stack write in Photoshop.
+
+    Returns:
+        {applied: [{layerId, name, effects}], count}. `effects` is re-read from Photoshop
+        after the write, and the call RAISES if the effect is not actually present -- these
+        descriptors ignore a field they do not understand rather than failing, so the
+        readback is the only real proof.
+    """
+
+    command = createCommand("addInnerShadowLayerStyle", {
+        "layerIds":layer_ids, "layerName":layer_name, "merge":merge,
+        "color":color, "blendMode":blend_mode, "opacity":opacity,
+        "angle":angle, "distance":distance, "choke":choke, "size":size
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def add_outer_glow_layer_style(
+    color: dict = {"red": 255, "green": 255, "blue": 190},
+    blend_mode: str = "SCREEN",
+    opacity: int = 35,
+    spread: int = 0,
+    size: int = 5,
+    noise: int = 0,
+    technique: str = "SOFTER",
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    merge: bool = True
+    ):
+    """Adds an Outer Glow layer style -- a halo spreading outward from the layer's edges.
+
+    Args:
+        color (dict): Glow colour as RGB 0-255.
+        blend_mode (str): Blend mode. SCREEN is Photoshop's default and the one that reads
+            as light; NORMAL makes it look like a flat outline.
+        opacity (int): 0-100.
+        spread (int): Pushes the glow outward before it fades, 0-100.
+        size (int): Blur radius in pixels.
+        noise (int): Grain in the glow, 0-100.
+        technique (str): "SOFTER" (default) for a blurred falloff, "PRECISE" for a hard
+            edge that follows the shape.
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name -- in a
+            multi-artboard file that is one call for the whole set. One of layer_ids or
+            layer_name is required.
+        merge (bool): True (default) keeps the layer's other effects. False replaces the
+            whole style with just this one, because `set layerEffects` is always a
+            whole-stack write in Photoshop.
+
+    Returns:
+        {applied: [{layerId, name, effects}], count}. `effects` is re-read from Photoshop
+        after the write, and the call RAISES if the effect is not actually present -- these
+        descriptors ignore a field they do not understand rather than failing, so the
+        readback is the only real proof.
+    """
+
+    command = createCommand("addOuterGlowLayerStyle", {
+        "layerIds":layer_ids, "layerName":layer_name, "merge":merge,
+        "color":color, "blendMode":blend_mode, "opacity":opacity,
+        "spread":spread, "size":size, "noise":noise, "technique":technique
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def add_inner_glow_layer_style(
+    color: dict = {"red": 255, "green": 255, "blue": 190},
+    blend_mode: str = "SCREEN",
+    opacity: int = 35,
+    spread: int = 0,
+    size: int = 5,
+    noise: int = 0,
+    technique: str = "SOFTER",
+    source: str = "EDGE",
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    merge: bool = True
+    ):
+    """Adds an Inner Glow layer style -- light inside the layer's edges.
+
+    Args:
+        color (dict): Glow colour as RGB 0-255.
+        blend_mode (str): Blend mode. SCREEN is Photoshop's default.
+        opacity (int): 0-100.
+        spread (int): Pushes the glow inward before it fades, 0-100.
+        size (int): Blur radius in pixels.
+        noise (int): Grain in the glow, 0-100.
+        technique (str): "SOFTER" (default) for a blurred falloff, "PRECISE" for a hard
+            edge that follows the shape.
+        source (str): "EDGE" glows inward from the outline, "CENTER" glows outward from the
+            middle. Photoshop's "Source" radio buttons.
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name -- in a
+            multi-artboard file that is one call for the whole set. One of layer_ids or
+            layer_name is required.
+        merge (bool): True (default) keeps the layer's other effects. False replaces the
+            whole style with just this one, because `set layerEffects` is always a
+            whole-stack write in Photoshop.
+
+    Returns:
+        {applied: [{layerId, name, effects}], count}. `effects` is re-read from Photoshop
+        after the write, and the call RAISES if the effect is not actually present -- these
+        descriptors ignore a field they do not understand rather than failing, so the
+        readback is the only real proof.
+    """
+
+    command = createCommand("addInnerGlowLayerStyle", {
+        "layerIds":layer_ids, "layerName":layer_name, "merge":merge,
+        "color":color, "blendMode":blend_mode, "opacity":opacity,
+        "spread":spread, "size":size, "noise":noise,
+        "technique":technique, "source":source
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def add_satin_layer_style(
+    color: dict = {"red": 0, "green": 0, "blue": 0},
+    blend_mode: str = "MULTIPLY",
+    opacity: int = 50,
+    angle: int = 90,
+    distance: int = 8,
+    size: int = 7,
+    invert: bool = False,
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    merge: bool = True
+    ):
+    """Adds a Satin layer style -- shading folded from the layer's own shape.
+
+    Args:
+        color (dict): Shading colour as RGB 0-255.
+        blend_mode (str): Blend mode. MULTIPLY is Photoshop's default.
+        opacity (int): 0-100.
+        angle (int): -180 to 180.
+        distance (int): Offset in pixels.
+        size (int): Blur radius in pixels.
+        invert (bool): Flips which parts of the shape are shaded.
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name -- in a
+            multi-artboard file that is one call for the whole set. One of layer_ids or
+            layer_name is required.
+        merge (bool): True (default) keeps the layer's other effects. False replaces the
+            whole style with just this one, because `set layerEffects` is always a
+            whole-stack write in Photoshop.
+
+    Returns:
+        {applied: [{layerId, name, effects}], count}. `effects` is re-read from Photoshop
+        after the write, and the call RAISES if the effect is not actually present -- these
+        descriptors ignore a field they do not understand rather than failing, so the
+        readback is the only real proof.
+    """
+
+    command = createCommand("addSatinLayerStyle", {
+        "layerIds":layer_ids, "layerName":layer_name, "merge":merge,
+        "color":color, "blendMode":blend_mode, "opacity":opacity,
+        "angle":angle, "distance":distance, "size":size, "invert":invert
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def add_color_overlay_layer_style(
+    color: dict = {"red": 0, "green": 0, "blue": 0},
+    blend_mode: str = "NORMAL",
+    opacity: int = 100,
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    merge: bool = True
+    ):
+    """Adds a Color Overlay layer style -- flat colour over the layer, non-destructively.
+
+    Prefer this over filling a layer when the colour has to stay editable, and over
+    edit_text_layer's text_color for a text layer: that argument rewrites the character run
+    and has destroyed fonts. An overlay leaves the type untouched.
+
+    Args:
+        color (dict): Overlay colour as RGB 0-255.
+        blend_mode (str): Blend mode.
+        opacity (int): 0-100.
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name -- in a
+            multi-artboard file that is one call for the whole set. One of layer_ids or
+            layer_name is required.
+        merge (bool): True (default) keeps the layer's other effects. False replaces the
+            whole style with just this one, because `set layerEffects` is always a
+            whole-stack write in Photoshop.
+
+    Returns:
+        {applied: [{layerId, name, effects}], count}. `effects` is re-read from Photoshop
+        after the write, and the call RAISES if the effect is not actually present -- these
+        descriptors ignore a field they do not understand rather than failing, so the
+        readback is the only real proof.
+    """
+
+    command = createCommand("addColorOverlayLayerStyle", {
+        "layerIds":layer_ids, "layerName":layer_name, "merge":merge,
+        "color":color, "blendMode":blend_mode, "opacity":opacity
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def add_bevel_emboss_layer_style(
+    style: str = "INNER",
+    technique: str = "SMOOTH",
+    direction: str = "UP",
+    depth: int = 100,
+    size: int = 5,
+    soften: int = 0,
+    angle: int = 120,
+    altitude: int = 30,
+    highlight_color: dict = {"red": 255, "green": 255, "blue": 255},
+    highlight_blend_mode: str = "SCREEN",
+    highlight_opacity: int = 75,
+    shadow_color: dict = {"red": 0, "green": 0, "blue": 0},
+    shadow_blend_mode: str = "MULTIPLY",
+    shadow_opacity: int = 75,
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    merge: bool = True
+    ):
+    """Adds a Bevel & Emboss layer style -- a lit edge that reads as raised or carved.
+
+    Args:
+        style (str): "INNER" (default), "OUTER", "EMBOSS", "PILLOW" or "STROKE". Photoshop's
+            own default when this is not sent is OUTER, not the INNER the dialog opens on,
+            so it is always written explicitly.
+        technique (str): "SMOOTH" (default), "CHISEL_HARD" or "CHISEL_SOFT".
+        direction (str): "UP" (default) or "DOWN".
+        depth (int): Strength of the bevel, 1-1000 percent.
+        size (int): Bevel width in pixels.
+        soften (int): Blurs the bevel, 0-16 pixels.
+        angle (int): Light direction, -180 to 180.
+        altitude (int): Light height, 0-90. Low is a raking light, 90 is straight on.
+        highlight_color (dict): Lit-side colour as RGB 0-255.
+        highlight_blend_mode (str): Blend mode for the lit side.
+        highlight_opacity (int): 0-100.
+        shadow_color (dict): Shaded-side colour as RGB 0-255.
+        shadow_blend_mode (str): Blend mode for the shaded side.
+        shadow_opacity (int): 0-100.
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name -- in a
+            multi-artboard file that is one call for the whole set. One of layer_ids or
+            layer_name is required.
+        merge (bool): True (default) keeps the layer's other effects. False replaces the
+            whole style with just this one, because `set layerEffects` is always a
+            whole-stack write in Photoshop.
+
+    Returns:
+        {applied: [{layerId, name, effects}], count}. `effects` is re-read from Photoshop
+        after the write, and the call RAISES if the effect is not actually present -- these
+        descriptors ignore a field they do not understand rather than failing, so the
+        readback is the only real proof.
+    """
+
+    command = createCommand("addBevelEmbossLayerStyle", {
+        "layerIds":layer_ids, "layerName":layer_name, "merge":merge,
+        "style":style, "technique":technique, "direction":direction,
+        "depth":depth, "size":size, "soften":soften,
+        "angle":angle, "altitude":altitude,
+        "highlightColor":highlight_color, "highlightBlendMode":highlight_blend_mode,
+        "highlightOpacity":highlight_opacity,
+        "shadowColor":shadow_color, "shadowBlendMode":shadow_blend_mode,
+        "shadowOpacity":shadow_opacity
+    })
+
+    return sendCommand(command)
+
+
+@mcp.tool()
+def add_pattern_overlay_layer_style(
+    pattern_name: str,
+    pattern_id: str,
+    blend_mode: str = "NORMAL",
+    opacity: int = 100,
+    scale: int = 100,
+    linked: bool = True,
+    layer_ids: list[int] = None,
+    layer_name: str = None,
+    merge: bool = True
+    ):
+    """Adds a Pattern Overlay layer style.
+
+    The pattern must ALREADY exist in the document's pattern presets -- there is no API here
+    to create one. Get its name and ID by applying the pattern to any layer by hand once and
+    reading it back with get_layer_effects(layer_id=...): the `patternFill.pattern` object
+    holds both.
+
+    Args:
+        pattern_name (str): The preset's name, exactly as Photoshop reports it.
+        pattern_id (str): The preset's GUID, from get_layer_effects.
+        blend_mode (str): Blend mode.
+        opacity (int): 0-100.
+        scale (int): Pattern scale, 1-1000 percent.
+        linked (bool): Link the pattern to the layer so it moves with it.
+        layer_ids (list[int], optional): Target layer IDs.
+        layer_name (str, optional): Target every layer with this exact name -- in a
+            multi-artboard file that is one call for the whole set. One of layer_ids or
+            layer_name is required.
+        merge (bool): True (default) keeps the layer's other effects. False replaces the
+            whole style with just this one, because `set layerEffects` is always a
+            whole-stack write in Photoshop.
+
+    Returns:
+        {applied: [{layerId, name, effects}], count}. `effects` is re-read from Photoshop
+        after the write, and the call RAISES if the effect is not actually present -- these
+        descriptors ignore a field they do not understand rather than failing, so the
+        readback is the only real proof.
+    """
+
+    command = createCommand("addPatternOverlayLayerStyle", {
+        "layerIds":layer_ids, "layerName":layer_name, "merge":merge,
+        "patternName":pattern_name, "patternId":pattern_id,
+        "blendMode":blend_mode, "opacity":opacity, "scale":scale, "linked":linked
+    })
+
+    return sendCommand(command)
+
 
 @mcp.tool()
 def duplicate_layer(layer_to_duplicate_id:int, duplicate_layer_name:str):

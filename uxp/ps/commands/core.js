@@ -619,15 +619,91 @@ const createDocument = async (command) => {
     });
 };
 
+// Verbs whose _path must ALREADY exist because they read it. Creating a missing
+// file for one of these turns a typo into an empty file on disk plus a confusing
+// downstream error, instead of saying which path was wrong. Anything not listed
+// here keeps the create-if-missing behaviour, which is what an export or a save
+// needs -- so an unknown verb behaves exactly as before and a missing name here
+// can only ever cost the old behaviour, never a wrong one.
+const READ_PATH_VERBS = [
+    "open",
+    "placeEvent",
+    "placedLayerReplace",
+    "placedLayerCreateFromFile",
+    "importPresets",
+];
+
+// batchPlay only accepts UXP session tokens where a descriptor wants a file,
+// never a raw filesystem path, so verbs like open / export / save-in fail with
+// "invalid file token used". Swap every absolute _path for a token first.
+// Output files (a .gif about to be written) do not exist yet, hence the create
+// fallback -- getEntryWithUrl throws on a missing file. No `overwrite` on that
+// create: we are in the branch where the file did NOT resolve, so overwrite can
+// only matter when getEntryWithUrl failed for some other reason (permissions, a
+// detached volume) -- and truncating a file that does exist is the worst
+// possible response to that.
+const tokenizePath = async (path, mustExist) => {
+    let url = "file:" + path;
+    let entry;
+
+    try {
+        entry = await fs.getEntryWithUrl(url);
+    } catch (e) {
+        if (mustExist) {
+            throw new Error(
+                `executeBatchPlayCommand : ${path} does not exist, and this descriptor reads it rather than writing it`
+            );
+        }
+
+        entry = await fs.createEntryWithUrl(url);
+    }
+
+    return await fs.createSessionToken(entry);
+};
+
+const tokenizeDescriptorPaths = async (node, mustExist = false) => {
+    if (Array.isArray(node)) {
+        for (let item of node) {
+            await tokenizeDescriptorPaths(item, mustExist);
+        }
+        return;
+    }
+
+    if (node === null || typeof node !== "object") {
+        return;
+    }
+
+    // _obj names the verb, and a nested descriptor inherits the intent of the
+    // one it sits inside until a nested _obj says otherwise.
+    if (typeof node._obj === "string") {
+        mustExist = READ_PATH_VERBS.indexOf(node._obj) !== -1;
+    }
+
+    for (let key of Object.keys(node)) {
+        let value = node[key];
+
+        // a token is already an opaque string; only absolute paths need work
+        if (key === "_path" && typeof value === "string" && value.startsWith("/")) {
+            node[key] = await tokenizePath(value, mustExist);
+        } else {
+            await tokenizeDescriptorPaths(value, mustExist);
+        }
+    }
+};
+
 const executeBatchPlayCommand = async (commands) => {
     let options = commands.options;
     let c = options.commands;
 
-
+    await tokenizeDescriptorPaths(c);
 
     let out = await execute(async () => {
         let o = await action.batchPlay(c, {});
-        return o[0]
+
+        //Default stays o[0] for backwards compatibility. Reads need the whole
+        //array: a single call asking about N layers otherwise reports only the
+        //first, which reads as "the other N-1 have nothing".
+        return options.returnAll === true ? o : o[0]
     });
 
     console.log(out)

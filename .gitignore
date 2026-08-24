@@ -6,14 +6,23 @@ dist/
 # REPO NAY PUBLIC (github.com/anhthienonline/adb-mcp) — moi thu duoi day khong
 # duoc commit. Gui tay cho tung nguoi thay vi day len day.
 
-# Quyen cua Claude Code — duong dan tuyet doi cua tung may, khong dung chung duoc
-.claude/settings.local.json
-.claude/settings.json
+# Quyen cua Claude Code.
+# settings.json duoc commit: da lam portable — khong co ten user, khong co duong dan
+# tuyet doi cua may nao, khong co ten khach hang. Moi nguoi clone la co san.
+# settings.local.json va ban .example de gui tay thi KHONG commit — gui truc tiep cho
+# tung nguoi (Teams/Dropbox), nguoi nhan copy vao .claude/settings.local.json.
+.claude/settings.local.json*
 .claude/*.bak
 
 # Skill chua du lieu san xuat cua khach hang: cay layer, ma job, convention dat ten,
 # tai lieu client-issued. Khong dua len repo public.
 .claude/skills/
+
+# .claude/skills/ bi chan, nhung ban ZIP cua no thi khong — va cach gui skill cho
+# tung nguoi la zip lai roi gui, nen file zip do luon nam san trong cay lam viec.
+# Mot lan `git add -A` la du lieu khach hang len GitHub public. Chan het zip: chua
+# co zip nao can commit, muon commit thi `git add -f`.
+*.zip
 
 # Anh khach hang tung nam trong repo — chan truoc de lan sau khong lot vao commit
 Images copy/
