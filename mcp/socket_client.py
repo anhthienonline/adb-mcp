@@ -145,8 +145,18 @@ def send_message_blocking(command, timeout=None):
         # Make sure client is disconnected
         if sio.connected:
             sio.disconnect()
-        # Wait for the thread to finish (should be quick after disconnect)
-        client_thread.join(timeout=1)
+        # Wait for the thread to finish (should be quick after disconnect).
+        # The response is already in hand by the time we get here and the worker
+        # is a daemon, so this join only ever waits out its own timeout: measured
+        # 1002ms of a 1080ms call, 92.8% of the whole thing, for nothing. Thread
+        # count does not accumulate across calls, so a short timeout is enough to
+        # keep the tidy-up behaviour without paying a second per command.
+        # A/B do ngay tren job Cat Bond: dung 1 lenh build 300x600 (~164 lenh MCP),
+        # timeout=1 mat 408s, timeout=0.05 mat 61s — nhanh 6.7x, va anh export ra
+        # LECH 0 PIXEL. Hai lan chay lien tiep voi 0.05 cung lech 0 pixel, nen
+        # khong he sinh ra bat dinh. Thread khong tich luy: sau 80 lenh dung o
+        # 4-5 thread, nghi 1 giay la ve dung 1 (MainThread).
+        client_thread.join(timeout=0.05)
 
 class AppError(Exception):
     pass
