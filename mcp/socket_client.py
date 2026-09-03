@@ -130,7 +130,17 @@ def send_message_blocking(command, timeout=None):
                 logger.log(f"Response (not JSON-serializable): {response}")
 
             if response["status"] == "FAILURE":
-                raise AppError(f"Error returned from {application}: {response['message']}")
+                err = AppError(f"Error returned from {application}: {response['message']}")
+                # The proxy tags the failures it raises itself: NOT_CONNECTED
+                # when no plugin is registered, APP_DISCONNECTED when the app
+                # went away still holding the command. Carry the tag on the
+                # exception so callers can branch on it instead of grepping the
+                # prose - matching on the sentence is how doctor.sh quietly
+                # started reporting apps that were not even open as connected.
+                # None here means the failure came from the app itself, or the
+                # proxy predates the field.
+                err.code = response.get("code")
+                raise err
             
         return response
     except AppError:
@@ -159,7 +169,54 @@ def send_message_blocking(command, timeout=None):
         client_thread.join(timeout=0.05)
 
 class AppError(Exception):
-    pass
+    """A FAILURE came back over the socket.
+
+    `code` distinguishes who failed. The proxy sets NOT_CONNECTED (no plugin
+    registered) or APP_DISCONNECTED (the app vanished mid-command, so the work
+    may already be done - never retry blindly on that one). It stays None when
+    the app itself reported the error, and also when talking to a proxy old
+    enough not to send the field, so treat None as "the app failed" and keep any
+    legacy check on the message text as a fallback rather than replacing it.
+    """
+
+    code = None
+
+# Codes the PROXY puts on failures it raises itself, as opposed to a failure the
+# app reported. They live here, with the two helpers below, because the
+# alternative - every caller comparing strings for itself - is exactly what let
+# doctor.sh report apps that were not even open as connected. That happened
+# twice: once for NOT_CONNECTED, and again for APP_DISCONNECTED in the very
+# review that was meant to catch it. Nine call sites, one meaning; keep the
+# meaning in one place.
+PROXY_CODES = ("NOT_CONNECTED", "APP_DISCONNECTED")
+
+
+def error_code(e):
+    """The proxy's code for this AppError, or None if the app itself failed.
+
+    Falls back to scanning the message so a proxy old enough not to send `code`
+    is still classified correctly.
+    """
+    code = getattr(e, "code", None)
+    if code:
+        return code
+    text = str(e)
+    for c in PROXY_CODES:
+        if c in text:
+            return c
+    return None
+
+
+def app_is_alive(e):
+    """Did this AppError come back from a plugin that is actually running?
+
+    True only when the app itself produced the error - an unknown command, a
+    document that is not open. Those prove a plugin answered. NOT_CONNECTED
+    means nothing was reached; APP_DISCONNECTED means the app vanished while
+    holding the command. A health check must count both as dead.
+    """
+    return error_code(e) is None
+
 
 def configure(app=None, url=None, timeout=None):
     

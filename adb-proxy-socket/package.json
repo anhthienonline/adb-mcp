@@ -5,7 +5,8 @@
   "main": "proxy.js",
   "bin": "proxy.js",
   "scripts": {
-    "build": "pkg ."
+    "build": "pkg .",
+    "stop": "lsof -nP -iTCP:3001 -sTCP:LISTEN -t | xargs kill"
   },
   "author": "Mike Chambers",
   "license": "ISC",

@@ -311,15 +311,17 @@ lsof -nP -iTCP:3001 -sTCP:LISTEN     # proxy dang nghe
 ```bash
 cd <repo>/mcp && uv run python - <<'EOF'
 import socket_client
-from socket_client import AppError
+from socket_client import AppError, app_is_alive
 for app in ("photoshop", "aftereffects", "illustrator", "indesign", "premiere"):
     socket_client.configure(app=app, url="http://localhost:3001", timeout=6)
     try:
         socket_client.send_message_blocking(
             {"application": app, "action": "__probe__", "options": {}}, timeout=6)
         ok = True
-    except AppError:
-        ok = True          # plugin tra loi "unknown command" -> dang song
+    except AppError as e:
+        # Chi loi do CHINH APP sinh ra moi chung minh no dang chay; cac ma cua
+        # proxy nghia nguoc lai. app_is_alive() giu nghia do o mot cho duy nhat.
+        ok = app_is_alive(e)
     except Exception:
         ok = False
     print(f"  {app:14} {'OK' if ok else 'chua noi'}")

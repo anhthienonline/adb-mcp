@@ -144,7 +144,7 @@ if lsof -nP -iTCP:3001 -sTCP:LISTEN >/dev/null 2>&1; then
   if [ -x "$VENV_PY" ]; then
     ( cd "$MCPDIR" && "$VENV_PY" - <<'PY'
 import socket_client
-from socket_client import AppError
+from socket_client import AppError, app_is_alive
 
 for app in ("photoshop", "illustrator", "aftereffects", "indesign", "premiere"):
     socket_client.configure(app=app, url="http://localhost:3001", timeout=6)
@@ -152,8 +152,12 @@ for app in ("photoshop", "illustrator", "aftereffects", "indesign", "premiere"):
         socket_client.send_message_blocking(
             {"application": app, "action": "__probe__", "options": {}}, timeout=6)
         ok = True
-    except AppError:
-        ok = True          # plugin tra loi "unknown command" -> dang song
+    except AppError as e:
+        # Chi loi do CHINH APP sinh ra moi chung minh no dang chay. Cac ma cua
+        # proxy (NOT_CONNECTED, APP_DISCONNECTED) nghia nguoc lai. Dung ham
+        # chung, dung tu so chuoi o day — tu so la dung cai da hai lan lam
+        # doctor bao "noi duoc" cho app chua he mo.
+        ok = app_is_alive(e)
     except Exception:
         ok = False
     color = "\033[32mnoi duoc\033[0m" if ok else "\033[31mchua noi\033[0m"

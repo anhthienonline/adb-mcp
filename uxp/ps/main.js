@@ -60,7 +60,22 @@ const onCommandPacket = async (packet) => {
         let doc = generateDocumentInfo(activeDocument, activeDocument)
         out.document = doc;
 
-        out.layers = await getLayers();
+        // The layer tree is 98% of a typical response and 80% of its time:
+        // measured on a 183-node document, 33.46 KB of a 34.06 KB packet and
+        // 231 ms of a 289 ms round trip. Every command paid it, including the
+        // ones that never look at it - a 164-command build spent 37.8 s and
+        // 5.4 MB on a tree nobody read.
+        //
+        // Default is unchanged, so the MCP tools behave exactly as before. A
+        // caller that does not want it passes options.includeLayers = false;
+        // nothing is lost by doing so, because getLayers() returns the very
+        // same tree as `out.response` when the action IS getLayers (verified
+        // byte-identical), and no script in the repo or the skills reads
+        // out.layers at all.
+        let opts = command && command.options ? command.options : {};
+        if (opts.includeLayers !== false) {
+            out.layers = await getLayers();
+        }
 
         out.hasActiveSelection = hasActiveSelection();
     } catch (e) {
@@ -81,6 +96,10 @@ function connectToServer() {
         updateButton();
         console.log("Connected to server with ID:", socket.id);
         socket.emit("register", { application: APPLICATION });
+        // Deliver anything that finished while the socket was down. The proxy
+        // routes by the packet's senderId, not by ours, so a new socket id here
+        // does not matter.
+        flushPendingResponses();
     });
 
     socket.on("command_packet", async (packet) => {
@@ -117,6 +136,31 @@ function disconnectFromServer() {
     }
 }
 
+// A socket that dies while a command is running does not undo the command: the
+// app has already applied it. Throwing the response away here is what turned a
+// one-second blip into "Connection Timed Out" for work that was in fact done -
+// and a blind retry then applies it twice. Hold it and flush on reconnect; the
+// caller is normally still waiting, because its own timeout is far longer than
+// the second or so socket.io takes to come back.
+const PENDING_MAX = 32;
+const PENDING_TTL_MS = 10 * 60 * 1000;
+let pendingResponses = [];
+
+function flushPendingResponses() {
+    if (!pendingResponses.length || !socket || !socket.connected) return;
+    const now = Date.now();
+    const live = pendingResponses.filter((p) => now - p.at < PENDING_TTL_MS);
+    const stale = pendingResponses.length - live.length;
+    pendingResponses = [];
+    for (const p of live) {
+        socket.emit("command_packet_response", { packet: p.packet });
+    }
+    console.log(
+        `Flushed ${live.length} buffered response(s)` +
+            (stale ? `, dropped ${stale} past their ${PENDING_TTL_MS / 60000} min TTL` : "")
+    );
+}
+
 function sendResponsePacket(packet) {
     if (socket && socket.connected) {
         socket.emit("command_packet_response", {
@@ -124,6 +168,14 @@ function sendResponsePacket(packet) {
         });
         return true;
     }
+    // Cap the buffer: nobody is still waiting on an ancient response, and an
+    // unbounded list would keep every reply from a long offline stretch.
+    pendingResponses.push({ packet: packet, at: Date.now() });
+    if (pendingResponses.length > PENDING_MAX) pendingResponses.shift();
+    console.log(
+        `Socket down; holding response for ${packet.senderId} ` +
+            `(${pendingResponses.length} pending)`
+    );
     return false;
 }
 
